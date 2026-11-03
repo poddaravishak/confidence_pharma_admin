@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --brand-primary: #073783;
+  --brand-blue: #0799E6;
+  --brand-green: #20B83D;
+  --brand-light: #DCEEFF;
+
+  --background: #FFFFFF;
+  --surface: #F5F8FC;
+  --text-primary: #172B4D;
+  --text-secondary: #64748B;
+}
+
+body {
+  color: var(--text-primary);
+  background-color: var(--surface);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Custom polished scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #F1F5F9;
+}
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}
+
+@layer utilities {
+  .brand-gradient {
+    background: linear-gradient(135deg, #073783 0%, #0799E6 100%);
+  }
+  .brand-badge {
+    background-color: #DCEEFF;
+    color: #073783;
+    border: 1px solid #B8DCFE;
+  }
+  .brand-badge-green {
+    background-color: #E8F8EC;
+    color: #167E2A;
+    border: 1px solid #B8E8C3;
+  }
+}
