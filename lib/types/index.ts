@@ -65,6 +65,40 @@ export interface Customer {
   createdAt: string;
 }
 
+export interface Subcategory {
+  id: string;
+  nameEn: string;
+  nameBn: string;
+  slug: string;
+  isActive: boolean;
+  productsCount?: number;
+}
+
+export interface Category {
+  id: string;
+  nameEn: string;
+  nameBn: string;
+  slug: string;
+  icon?: string;
+  displayOrder: number;
+  isActive: boolean;
+  subcategories: Subcategory[];
+  totalProductsCount: number;
+}
+
+export interface Brand {
+  id: string;
+  name: string;
+  slug: string;
+  countryOfOrigin: string;
+  headquarters: string;
+  totalProductsCount: number;
+  establishedYear?: number;
+  dgdaLicenseNo?: string;
+  isActive: boolean;
+  description?: string;
+}
+
 export interface PackSize {
   id: string;
   packNameEn: string;
