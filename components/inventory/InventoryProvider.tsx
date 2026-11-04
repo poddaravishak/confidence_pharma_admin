@@ -20,7 +20,6 @@ import {
 import {
   APPROVAL_THRESHOLD,
   CURRENT_USER,
-  STAFF,
   inventoryItems,
   inventorySuppliers,
   purchaseOrderDrafts,
@@ -34,6 +33,17 @@ import {
 import { ItemStock, computeItemStock, movementTypeForReason } from "@/lib/inventory";
 
 type Toast = { id: number; message: string; tone: "success" | "warning" };
+
+export interface OpeningStockInput {
+  warehouseId: string;
+  batchNumber: string;
+  location: string;
+  manufacturingDate: string;
+  expiryDate: string;
+  /** Base units */
+  quantity: number;
+  unitCost: number;
+}
 export type WarehouseFilter = "ALL" | string;
 
 interface InventoryContextValue {
@@ -77,7 +87,26 @@ interface InventoryContextValue {
   createPurchaseOrders: (lines: { itemId: string; packs: number }[]) => string[];
   markPurchaseOrderSent: (id: string) => void;
 
+  /** Catalog → inventory: register a new product, optionally with an opening-stock batch. */
+  addItem: (item: InventoryItem, opening?: OpeningStockInput) => void;
+  updateItem: (id: string, patch: Partial<InventoryItem>) => void;
+  /** FEFO allocation from sellable batches (pure, does not change stock). */
+  allocateFefo: (itemId: string, baseQty: number, warehouseId?: string) => { batchId: string; quantity: number }[];
+  /** Take stock out of batches (dispatch). Quantities are base units. */
+  issueStock: (lines: { batchId: string; quantity: number }[], reference: string, note?: string) => void;
+  /** Put returned goods back. Sellable → original batch, damaged/expired → quarantine batch. */
+  receiveReturnedStock: (input: {
+    itemId: string;
+    batchId?: string;
+    quantity: number;
+    condition: "SELLABLE" | "DAMAGED" | "EXPIRED";
+    reference: string;
+    note?: string;
+  }) => void;
+
   notify: (message: string, tone?: Toast["tone"]) => void;
+  /** Name recorded on movements/adjustments (set by the app store from the signed-in user). */
+  setActor: (name: string) => void;
 }
 
 const InventoryContext = createContext<InventoryContextValue | null>(null);
@@ -97,6 +126,7 @@ const byId = <T extends { id: string }>(list: T[]) =>
 const nowIso = () => new Date().toISOString();
 
 export function InventoryProvider({ children }: { children: React.ReactNode }) {
+  const [items, setItems] = useState<InventoryItem[]>(inventoryItems);
   const [batches, setBatches] = useState<StockBatch[]>(stockBatches);
   const [movements, setMovements] = useState<StockMovement[]>(stockMovements);
   const [adjustments, setAdjustments] = useState<StockAdjustment[]>(stockAdjustments);
@@ -107,9 +137,13 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   const seq = useRef(100);
+  const actorRef = useRef<string>(CURRENT_USER);
+  const setActor = useCallback((name: string) => {
+    actorRef.current = name;
+  }, []);
   const next = (prefix: string) => `${prefix}${String(++seq.current).padStart(3, "0")}`;
 
-  const itemById = useMemo(() => byId(inventoryItems), []);
+  const itemById = useMemo(() => byId(items), [items]);
   const warehouseById = useMemo(() => byId(warehouses), []);
   const supplierById = useMemo(() => byId(inventorySuppliers), []);
   const batchById = useMemo(() => byId(batches), [batches]);
@@ -121,9 +155,9 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
 
   const stockByItem = useMemo(() => {
     const map: Record<string, ItemStock> = {};
-    for (const item of inventoryItems) map[item.id] = computeItemStock(item, scopedBatches);
+    for (const item of items) map[item.id] = computeItemStock(item, scopedBatches);
     return map;
-  }, [scopedBatches]);
+  }, [items, scopedBatches]);
 
   /* ---------- toasts ---------- */
 
@@ -141,7 +175,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
     );
 
   const logMovement = (m: Omit<StockMovement, "id" | "date" | "performedBy"> & { performedBy?: string }) => {
-    const entry: StockMovement = { id: next("mv-"), date: nowIso(), performedBy: CURRENT_USER, ...m };
+    const entry: StockMovement = { id: next("mv-"), date: nowIso(), performedBy: actorRef.current, ...m };
     setMovements((prev) => [entry, ...prev]);
   };
 
@@ -182,9 +216,9 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       previousQuantity: batch.availableQuantity,
       newQuantity,
       costImpact,
-      requestedBy: CURRENT_USER,
+      requestedBy: actorRef.current,
       status: needsApproval ? "PENDING" : "APPROVED",
-      ...(needsApproval ? {} : { reviewedBy: CURRENT_USER, reviewedAt: nowIso() }),
+      ...(needsApproval ? {} : { reviewedBy: actorRef.current, reviewedAt: nowIso() }),
     };
     setAdjustments((prev) => [adj, ...prev]);
     if (!needsApproval) applyAdjustment(adj, batch.unitCost);
@@ -196,7 +230,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
     if (!adj || adj.status !== "PENDING") return;
     const batch = batches.find((b) => b.id === adj.batchId);
     setAdjustments((prev) =>
-      prev.map((a) => (a.id === id ? { ...a, status: "APPROVED", reviewedBy: STAFF.superAdmin, reviewedAt: nowIso() } : a))
+      prev.map((a) => (a.id === id ? { ...a, status: "APPROVED", reviewedBy: actorRef.current, reviewedAt: nowIso() } : a))
     );
     applyAdjustment(adj, batch?.unitCost ?? 0);
     notify(`${adj.id} approved and stock updated.`);
@@ -204,7 +238,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
 
   const rejectAdjustment = (id: string) => {
     setAdjustments((prev) =>
-      prev.map((a) => (a.id === id ? { ...a, status: "REJECTED", reviewedBy: STAFF.superAdmin, reviewedAt: nowIso() } : a))
+      prev.map((a) => (a.id === id ? { ...a, status: "REJECTED", reviewedBy: actorRef.current, reviewedAt: nowIso() } : a))
     );
     notify(`${id} rejected. Stock was not changed.`, "warning");
   };
@@ -246,7 +280,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       )
       .map((b) => ({ batchId: b.id, systemQuantity: b.availableQuantity, countedQuantity: null }));
     setCounts((prev) => [
-      { id, title, warehouseId, createdAt: nowIso(), createdBy: CURRENT_USER, status: "IN_PROGRESS", lines },
+      { id, title, warehouseId, createdAt: nowIso(), createdBy: actorRef.current, status: "IN_PROGRESS", lines },
       ...prev,
     ]);
     return id;
@@ -286,7 +320,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
   const createTransfer: InventoryContextValue["createTransfer"] = ({ fromWarehouseId, toWarehouseId, lines, note }) => {
     const id = next("TRF-2611-");
     setTransfers((prev) => [
-      { id, fromWarehouseId, toWarehouseId, status: "REQUESTED", requestedAt: nowIso(), requestedBy: CURRENT_USER, note, lines },
+      { id, fromWarehouseId, toWarehouseId, status: "REQUESTED", requestedAt: nowIso(), requestedBy: actorRef.current, note, lines },
       ...prev,
     ]);
     return id;
@@ -404,8 +438,132 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
   const markPurchaseOrderSent = (id: string) =>
     setPurchaseOrders((prev) => prev.map((p) => (p.id === id ? { ...p, status: "SENT" } : p)));
 
+  /* ---------- catalog & order integration ---------- */
+
+  const addItem: InventoryContextValue["addItem"] = (item, opening) => {
+    setItems((prev) => [item, ...prev]);
+    if (opening && opening.quantity > 0) {
+      const id = next("bt-");
+      setBatches((prev) => [
+        ...prev,
+        {
+          id,
+          itemId: item.id,
+          warehouseId: opening.warehouseId,
+          batchNumber: opening.batchNumber,
+          location: opening.location || "Receiving bay",
+          manufacturingDate: opening.manufacturingDate,
+          expiryDate: opening.expiryDate,
+          receivedDate: nowIso().slice(0, 10),
+          initialQuantity: opening.quantity,
+          availableQuantity: opening.quantity,
+          unitCost: opening.unitCost,
+          hold: "NONE",
+          purchaseRef: "OPENING",
+        },
+      ]);
+      logMovement({
+        itemId: item.id,
+        batchId: id,
+        warehouseId: opening.warehouseId,
+        type: "OPENING_STOCK",
+        quantity: opening.quantity,
+        unitCost: opening.unitCost,
+        reference: `OPEN-${item.sku}`,
+        note: "Opening stock entered with the new product",
+      });
+    }
+  };
+
+  const updateItem: InventoryContextValue["updateItem"] = (id, patch) =>
+    setItems((prev) => prev.map((i) => (i.id === id ? { ...i, ...patch } : i)));
+
+  const allocateFefo: InventoryContextValue["allocateFefo"] = (itemId, baseQty, warehouseId = "wh-01") => {
+    const out: { batchId: string; quantity: number }[] = [];
+    let left = baseQty;
+    const pool = batches
+      .filter((b) => b.itemId === itemId && b.warehouseId === warehouseId && b.hold === "NONE" && b.availableQuantity > 0)
+      .sort((a, b) => a.expiryDate.localeCompare(b.expiryDate));
+    for (const b of pool) {
+      if (left <= 0) break;
+      const take = Math.min(left, b.availableQuantity);
+      out.push({ batchId: b.id, quantity: take });
+      left -= take;
+    }
+    return out;
+  };
+
+  const issueStock: InventoryContextValue["issueStock"] = (lines, reference, note) => {
+    for (const l of lines) {
+      const b = batchById[l.batchId];
+      if (!b || l.quantity <= 0) continue;
+      changeBatchQty(l.batchId, -l.quantity);
+      logMovement({
+        itemId: b.itemId,
+        batchId: b.id,
+        warehouseId: b.warehouseId,
+        type: "SALE_OUT",
+        quantity: -l.quantity,
+        unitCost: b.unitCost,
+        reference,
+        note,
+      });
+    }
+  };
+
+  const receiveReturnedStock: InventoryContextValue["receiveReturnedStock"] = ({ itemId, batchId, quantity, condition, reference, note }) => {
+    if (quantity <= 0) return;
+    const item = itemById[itemId];
+    const source =
+      (batchId && batchById[batchId]) ||
+      batches.filter((b) => b.itemId === itemId).sort((a, b) => b.expiryDate.localeCompare(a.expiryDate))[0];
+    if (!source) return;
+
+    if (condition === "SELLABLE") {
+      changeBatchQty(source.id, quantity);
+      logMovement({
+        itemId,
+        batchId: source.id,
+        warehouseId: source.warehouseId,
+        type: "DELIVERY_RETURN_IN",
+        quantity,
+        unitCost: source.unitCost,
+        reference,
+        note: note ?? "Returned goods inspected and restocked",
+      });
+      return;
+    }
+
+    // Damaged or expired goods go to a quarantine batch so they never get picked.
+    const id = next("bt-");
+    setBatches((prev) => [
+      ...prev,
+      {
+        ...source,
+        id,
+        location: "Returns quarantine (RQ-01)",
+        receivedDate: nowIso().slice(0, 10),
+        initialQuantity: quantity,
+        availableQuantity: quantity,
+        hold: "QUARANTINE",
+        holdReason: `${condition === "DAMAGED" ? "Damaged" : "Expired"} return ${reference}${item ? ` (${item.name})` : ""}`,
+        purchaseRef: reference,
+      },
+    ]);
+    logMovement({
+      itemId,
+      batchId: id,
+      warehouseId: source.warehouseId,
+      type: "DELIVERY_RETURN_IN",
+      quantity,
+      unitCost: source.unitCost,
+      reference,
+      note: note ?? `Returned ${condition.toLowerCase()} goods moved to quarantine`,
+    });
+  };
+
   const value: InventoryContextValue = {
-    items: inventoryItems,
+    items,
     warehouses,
     suppliers: inventorySuppliers,
     batches,
@@ -436,6 +594,12 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
     cancelTransfer,
     createPurchaseOrders,
     markPurchaseOrderSent,
+    setActor,
+    addItem,
+    updateItem,
+    allocateFefo,
+    issueStock,
+    receiveReturnedStock,
     notify,
   };
 

@@ -1,11 +1,16 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
-import { Sidebar } from "@/components/layout/Sidebar";
-import { Header } from "@/components/layout/Header";
+import { Providers } from "@/components/providers/Providers";
 
 export const metadata: Metadata = {
   title: "Confidence Pharma | Admin Business Control Center",
   description: "One Stop B2B Healthcare & Business Marketplace Operations & Management System",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  themeColor: "#073783",
 };
 
 export default function RootLayout({
@@ -15,14 +20,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className="flex min-h-screen bg-slate-50 antialiased text-slate-900">
-        <Sidebar />
-        <div className="flex flex-1 flex-col overflow-x-hidden">
-          <Header />
-          <main className="flex-1 p-6 lg:p-8">{children}</main>
-        </div>
+      <body className="min-h-dvh bg-slate-50 text-slate-900 antialiased">
+        <Providers>{children}</Providers>
       </body>
     </html>
   );
 }
-

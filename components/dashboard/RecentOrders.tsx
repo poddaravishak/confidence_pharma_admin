@@ -1,100 +1,60 @@
 "use client";
 
-import React from "react";
+import React, { useMemo } from "react";
 import Link from "next/link";
+import { Truck } from "lucide-react";
 import { Order } from "@/lib/types";
-import { formatCurrency, formatDate } from "@/lib/utils";
-import { ArrowUpRight, Truck, MapPin } from "lucide-react";
+import { ORDER_STATUS_META } from "@/lib/orders";
+import { formatDateTime } from "@/lib/inventory";
+import { Badge } from "@/components/ui";
+import { ChartCard } from "@/components/analytics/primitives";
+import { taka } from "@/components/analytics/format";
 
-interface RecentOrdersProps {
-  orders: Order[];
-}
-
-export const RecentOrders: React.FC<RecentOrdersProps> = ({ orders }) => {
-  const getStatusBadge = (status: Order["orderStatus"]) => {
-    switch (status) {
-      case "DELIVERED":
-        return "bg-emerald-50 text-brand-green border-emerald-200";
-      case "OUT_FOR_DELIVERY":
-        return "bg-amber-50 text-amber-700 border-amber-200";
-      case "PROCESSING":
-      case "DISPATCHED":
-        return "bg-blue-50 text-brand-blue border-blue-200";
-      case "PACKED":
-      case "PLACED":
-        return "bg-brand-light/60 text-brand-primary border-brand-blue/30";
-      default:
-        return "bg-slate-50 text-slate-700 border-slate-200";
-    }
-  };
+/** Latest live orders from the store. */
+export function RecentOrders({ orders, limit = 7 }: { orders: Order[]; limit?: number }) {
+  const rows = useMemo(() => [...orders].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit), [orders, limit]);
 
   return (
-    <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-xs">
-      <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-        <div>
-          <h2 className="text-sm font-bold text-brand-primary">Live Orders & Delivery Dispatch</h2>
-          <p className="text-xs text-apptext-secondary">Recent orders and delivery tracking</p>
-        </div>
-        <Link
-          href="/delivery"
-          className="flex items-center gap-1 text-xs font-bold text-brand-blue hover:text-brand-primary transition"
-        >
-          <span>Delivery Board</span>
-          <ArrowUpRight className="h-3.5 w-3.5" />
-        </Link>
-      </div>
-
-      <div className="mt-4 divide-y divide-slate-100 overflow-x-auto">
-        <table className="w-full text-left text-xs">
-          <thead>
-            <tr className="text-apptext-secondary font-semibold uppercase text-[11px]">
-              <th className="pb-3 font-semibold">Order No</th>
-              <th className="pb-3 font-semibold">Pharmacy / Consignee</th>
-              <th className="pb-3 font-semibold">Delivery & Rider</th>
-              <th className="pb-3 font-semibold">Fulfillment</th>
-              <th className="pb-3 font-semibold text-right">Grand Total</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-50">
-            {orders.map((ord) => (
-              <tr key={ord.id} className="hover:bg-surface/80 transition">
-                <td className="py-3.5 font-mono font-bold text-brand-primary">
-                  {ord.orderNumber}
-                </td>
-                <td className="py-3.5">
-                  <p className="font-bold text-apptext-primary">{ord.customerName}</p>
-                  <p className="text-[11px] text-apptext-secondary flex items-center gap-1">
-                    <MapPin className="h-3 w-3 text-brand-blue" />
-                    {ord.address}
-                  </p>
-                </td>
-                <td className="py-3.5">
-                  {ord.assignedRider ? (
-                    <span className="flex items-center gap-1 font-semibold text-brand-primary text-[11px]">
-                      <Truck className="h-3 w-3 text-brand-green" />
-                      {ord.assignedRider.name}
+    <ChartCard title="Recent orders" description="Newest first, live" footerLink={{ href: "/orders", label: "All orders" }} bodyClassName="px-0 py-0 sm:px-0">
+      {rows.length === 0 ? (
+        <p className="px-5 py-10 text-center text-sm text-apptext-secondary">No orders yet.</p>
+      ) : (
+        <ul className="divide-y divide-slate-100">
+          {rows.map((o) => {
+            const meta = ORDER_STATUS_META[o.orderStatus];
+            const delivered = o.items.reduce((n, l) => n + (l.deliveredQuantity ?? 0), 0);
+            const ordered = o.items.reduce((n, l) => n + l.quantity, 0);
+            return (
+              <li key={o.id}>
+                <Link href={`/orders/${o.id}`} className="flex items-start gap-3 px-4 py-3 transition hover:bg-surface/70 sm:px-5">
+                  <span className="min-w-0 flex-1">
+                    <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <span className="font-mono text-xs font-semibold text-brand-primary">{o.orderNumber}</span>
+                      <Badge className={meta.badge}>{meta.label}</Badge>
                     </span>
-                  ) : (
-                    <span className="text-slate-400 text-[11px]">Pending Rider</span>
-                  )}
-                </td>
-                <td className="py-3.5">
-                  <span
-                    className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[10px] font-bold ${getStatusBadge(
-                      ord.orderStatus
-                    )}`}
-                  >
-                    {ord.orderStatus.replace(/_/g, " ")}
+                    <span className="mt-0.5 block truncate text-sm font-medium text-apptext-primary">{o.customerName}</span>
+                    <span className="flex flex-wrap items-center gap-x-2 text-xs text-apptext-secondary">
+                      <span>{formatDateTime(o.createdAt)}</span>
+                      {o.assignedRider && (
+                        <span className="inline-flex items-center gap-1">
+                          <Truck className="size-3" aria-hidden />
+                          {o.assignedRider.name}
+                        </span>
+                      )}
+                      {o.orderStatus === "PARTIALLY_DELIVERED" && (
+                        <span className="tabular-nums">
+                          {delivered} of {ordered} packs accepted
+                        </span>
+                      )}
+                    </span>
                   </span>
-                </td>
-                <td className="py-3.5 text-right font-black text-brand-primary font-mono">
-                  {formatCurrency(ord.grandTotal)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
+                  <span className="shrink-0 text-right text-sm font-semibold tabular-nums text-apptext-primary">{taka(o.grandTotal)}</span>
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </ChartCard>
   );
-};
+}

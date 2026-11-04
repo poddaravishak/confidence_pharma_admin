@@ -247,6 +247,106 @@ export const mockCustomers: Customer[] = [
     totalOrdersCount: 15,
     totalOrderValue: 195000,
     createdAt: "2026-09-01T10:00:00Z"
+  },
+  {
+    id: "cust-06",
+    businessName: "Rahman Pharmacy (Mohammadpur)",
+    ownerName: "Abdur Rahman",
+    customerType: "PHARMACY",
+    phone: "+8801715667788",
+    whatsappNumber: "+8801715667788",
+    verificationStatus: "APPROVED",
+    approvedBy: "Super Admin (Dr. TC Dey)",
+    approvedAt: "2026-06-12T09:00:00Z",
+    creditLimit: 120000,
+    currentDue: 24600,
+    documents: [],
+    address: {
+      fullAddress: "22/3 Tajmahal Road, Mohammadpur, Dhaka-1207",
+      division: "Dhaka",
+      district: "Dhaka",
+      upazilaArea: "Mohammadpur",
+      latitude: 23.759,
+      longitude: 90.3626
+    },
+    totalOrdersCount: 41,
+    totalOrderValue: 618000,
+    createdAt: "2026-06-12T09:00:00Z"
+  },
+  {
+    id: "cust-07",
+    businessName: "Green Life Hospital Pharmacy",
+    ownerName: "Farhana Yeasmin",
+    customerType: "HOSPITAL",
+    phone: "+8801819223344",
+    whatsappNumber: "+8801819223344",
+    verificationStatus: "APPROVED",
+    approvedBy: "Super Admin (Dr. TC Dey)",
+    approvedAt: "2026-03-20T09:00:00Z",
+    creditLimit: 400000,
+    currentDue: 86500,
+    documents: [],
+    address: {
+      fullAddress: "32 Green Road, Dhanmondi, Dhaka-1205",
+      division: "Dhaka",
+      district: "Dhaka",
+      upazilaArea: "Dhanmondi",
+      latitude: 23.7465,
+      longitude: 90.3866
+    },
+    totalOrdersCount: 63,
+    totalOrderValue: 1840000,
+    createdAt: "2026-03-20T09:00:00Z"
+  },
+  {
+    id: "cust-08",
+    businessName: "Shifa Medical Hall (Farmgate)",
+    ownerName: "Mizanur Rahman",
+    customerType: "PHARMACY",
+    phone: "+8801670112233",
+    whatsappNumber: "+8801670112233",
+    verificationStatus: "APPROVED",
+    approvedBy: "Super Admin (Dr. TC Dey)",
+    approvedAt: "2026-07-02T09:00:00Z",
+    creditLimit: 90000,
+    currentDue: 11200,
+    documents: [],
+    address: {
+      fullAddress: "45 Tejturi Bazar, Farmgate, Dhaka-1215",
+      division: "Dhaka",
+      district: "Dhaka",
+      upazilaArea: "Tejgaon",
+      latitude: 23.7577,
+      longitude: 90.3897
+    },
+    totalOrdersCount: 29,
+    totalOrderValue: 402000,
+    createdAt: "2026-07-02T09:00:00Z"
+  },
+  {
+    id: "cust-09",
+    businessName: "City Care Clinic (Banani)",
+    ownerName: "Dr. Sharmin Akter",
+    customerType: "CLINIC",
+    phone: "+8801755009988",
+    whatsappNumber: "+8801755009988",
+    verificationStatus: "APPROVED",
+    approvedBy: "Super Admin (Dr. TC Dey)",
+    approvedAt: "2026-08-18T09:00:00Z",
+    creditLimit: 200000,
+    currentDue: 0,
+    documents: [],
+    address: {
+      fullAddress: "Road 11, House 54, Banani, Dhaka-1213",
+      division: "Dhaka",
+      district: "Dhaka",
+      upazilaArea: "Banani",
+      latitude: 23.7937,
+      longitude: 90.4066
+    },
+    totalOrdersCount: 18,
+    totalOrderValue: 356000,
+    createdAt: "2026-08-18T09:00:00Z"
   }
 ];
 

@@ -21,6 +21,7 @@ export type OrderStatus =
   | 'DISPATCHED' 
   | 'OUT_FOR_DELIVERY'
   | 'DELIVERED' 
+  | 'PARTIALLY_DELIVERED'
   | 'CANCELLED' 
   | 'RETURNED' 
   | 'FAILED_DELIVERY';
@@ -164,6 +165,15 @@ export interface OrderItem {
   discountPct: number;
   lineTotal: number;
   cogsCost: number;
+  /** Base units (tablets, vials…) in one ordered pack. Used to move stock. */
+  unitsPerPack?: number;
+  /** FEFO batches picked for this line, in base units. Set at dispatch. */
+  batchAllocations?: { batchId: string; quantity: number }[];
+  /** Packs the customer accepted at the door (set on delivery). */
+  deliveredQuantity?: number;
+  /** Packs sent back with the rider (set on partial or failed delivery). */
+  returnedQuantity?: number;
+  returnReason?: ReturnReason;
 }
 
 export interface DeliveryPersonnel {
@@ -225,7 +235,35 @@ export interface Order {
   dispatchedAt?: string;
   estimatedDeliveryTime?: string;
   deliveredAt?: string;
+  runId?: string;
+  /** Grand total before a partial delivery revised it. */
+  originalGrandTotal?: number;
+  deliveryProof?: DeliveryProof;
+  failureReason?: string;
+  cancelReason?: string;
+  timeline?: OrderEvent[];
+  createdBy?: string;
 }
+
+export interface OrderEvent {
+  at: string;
+  status: OrderStatus | 'NOTE' | 'PAYMENT' | 'RETURN';
+  label: string;
+  by: string;
+  note?: string;
+}
+
+export interface DeliveryProof {
+  method: 'OTP' | 'SIGNATURE' | 'PHOTO';
+  receivedBy: string;
+  otp?: string;
+  photoCount?: number;
+  capturedAt: string;
+  paymentMethod: PaymentChannel;
+  amountCollected: number;
+}
+
+export type PaymentChannel = 'CASH' | 'BKASH' | 'NAGAD' | 'BANK' | 'CREDIT';
 
 export interface FinancialAccount {
   id: string;
@@ -305,6 +343,31 @@ export interface InventoryItem {
   isColdChain: boolean;
   storageCondition: string;
   isActive: boolean;
+
+  /* Catalog fields (optional so older seed items stay valid) */
+  nameBn?: string;
+  subcategory?: string;
+  strength?: string;
+  dosageForm?: string;
+  dgdaRegNo?: string;
+  barcode?: string;
+  description?: string;
+  vatPct?: number;
+  maxDiscountPct?: number;
+  minOrderQty?: number;
+  isPrescriptionRequired?: boolean;
+  isControlled?: boolean;
+  /** Extra sellable pack levels (e.g. Strip, Box, Carton) with their own prices. */
+  packSizes?: PackSize[];
+  pricingTiers?: QuantityPricingTier[];
+  imageUrls?: string[];
+  visibleTo?: CustomerType[];
+  minStockLevel?: number;
+  maxStockLevel?: number;
+  defaultWarehouseId?: string;
+  defaultLocation?: string;
+  status?: 'ACTIVE' | 'DRAFT' | 'INACTIVE';
+  createdAt?: string;
 }
 
 export type BatchHold = 'NONE' | 'QUARANTINE' | 'RECALLED';
@@ -336,7 +399,9 @@ export type StockMovementType =
   | 'DAMAGE'
   | 'EXPIRY_DISPOSAL'
   | 'TRANSFER_OUT'
-  | 'TRANSFER_IN';
+  | 'TRANSFER_IN'
+  | 'DELIVERY_RETURN_IN'
+  | 'OPENING_STOCK';
 
 export interface StockMovement {
   id: string;
@@ -426,4 +491,267 @@ export interface PurchaseOrderDraft {
   createdAt: string;
   lines: { itemId: string; packs: number; unitCost: number }[];
   status: 'DRAFT' | 'SENT';
+}
+
+/* ------------------------------------------------------------------ */
+/* Access control: roles, permissions, staff users                     */
+/* ------------------------------------------------------------------ */
+
+export type PermissionModule =
+  | 'dashboard'
+  | 'orders'
+  | 'delivery'
+  | 'returns'
+  | 'catalog'
+  | 'inventory'
+  | 'purchases'
+  | 'suppliers'
+  | 'customers'
+  | 'accounts'
+  | 'analytics'
+  | 'messages'
+  | 'settings'
+  | 'users'
+  | 'audit'
+  | 'rider_app';
+
+export type PermissionAction = 'view' | 'create' | 'edit' | 'delete' | 'approve' | 'export';
+
+export type PermissionSet = Partial<Record<PermissionModule, PermissionAction[]>>;
+
+export interface Role {
+  id: string;
+  name: string;
+  description: string;
+  /** System roles can be edited but not deleted. */
+  isSystem: boolean;
+  /** Tailwind classes for the role chip. */
+  color: string;
+  /** Where this role lands after sign-in. */
+  homePath: string;
+  permissions: PermissionSet;
+}
+
+export type StaffStatus = 'ACTIVE' | 'INACTIVE' | 'INVITED';
+
+export interface StaffUser {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  roleId: string;
+  designation: string;
+  initials: string;
+  status: StaffStatus;
+  warehouseId?: string;
+  /** Links a rider login to the DeliveryPersonnel record. */
+  riderId?: string;
+  twoFactorEnabled: boolean;
+  lastLoginAt?: string;
+  createdAt: string;
+}
+
+/* ------------------------------------------------------------------ */
+/* Delivery runs, returns, credit notes, rider settlement              */
+/* ------------------------------------------------------------------ */
+
+export type DeliveryRunStatus = 'LOADING' | 'IN_PROGRESS' | 'RETURNING' | 'SETTLED';
+
+export interface DeliveryRun {
+  id: string;
+  runNumber: string;
+  riderId: string;
+  date: string;
+  orderIds: string[];
+  status: DeliveryRunStatus;
+  /** Rider has ticked every line on the load sheet. */
+  loadVerified: boolean;
+  createdAt: string;
+  createdBy: string;
+  startedAt?: string;
+  settledAt?: string;
+  settlementId?: string;
+}
+
+export type ReturnReason =
+  | 'DAMAGED'
+  | 'OVER_ORDERED'
+  | 'WRONG_ITEM'
+  | 'NEAR_EXPIRY'
+  | 'PRICE_DISPUTE'
+  | 'QUALITY_ISSUE'
+  | 'CUSTOMER_UNAVAILABLE'
+  | 'REFUSED'
+  | 'OTHER';
+
+export type ReturnSource = 'PARTIAL_DELIVERY' | 'FAILED_DELIVERY' | 'CUSTOMER_RMA';
+
+/**
+ * Lifecycle:
+ * - Delivery returns: IN_TRANSIT (with rider) → RECEIVED (handed over) → COMPLETED (inspected and restocked)
+ * - Customer RMA:     REQUESTED → APPROVED → IN_TRANSIT (picked up) → RECEIVED → COMPLETED, or REJECTED
+ */
+export type ReturnStatus = 'REQUESTED' | 'APPROVED' | 'REJECTED' | 'IN_TRANSIT' | 'RECEIVED' | 'COMPLETED';
+
+export type ItemCondition = 'SELLABLE' | 'DAMAGED' | 'EXPIRED';
+
+export interface ReturnLine {
+  orderItemId: string;
+  productId: string;
+  productName: string;
+  packSizeName: string;
+  /** Packs expected back. */
+  quantity: number;
+  unitPrice: number;
+  unitsPerPack: number;
+  reason: ReturnReason;
+  /** Original FEFO batch the goods were picked from. */
+  batchId?: string;
+  /** Packs physically handed over at the warehouse. */
+  receivedQuantity?: number;
+  /** Inspection split (packs). sellable + damaged = received. */
+  sellableQuantity?: number;
+  damagedQuantity?: number;
+  damageCondition?: Exclude<ItemCondition, 'SELLABLE'>;
+}
+
+export interface ReturnRecord {
+  id: string;
+  returnNumber: string;
+  source: ReturnSource;
+  status: ReturnStatus;
+  orderId: string;
+  orderNumber: string;
+  customerId: string;
+  customerName: string;
+  riderId?: string;
+  runId?: string;
+  lines: ReturnLine[];
+  /** Value of the goods coming back at invoiced price. */
+  totalValue: number;
+  note?: string;
+  photoCount?: number;
+  createdAt: string;
+  createdBy: string;
+  approvedBy?: string;
+  rejectedReason?: string;
+  receivedAt?: string;
+  receivedBy?: string;
+  inspectedAt?: string;
+  inspectedBy?: string;
+  creditNoteId?: string;
+  /** Packs that were expected but not handed over. */
+  shortageQuantity?: number;
+}
+
+export type CreditNoteStatus = 'ISSUED' | 'APPLIED' | 'REFUNDED';
+
+export interface CreditNote {
+  id: string;
+  creditNoteNumber: string;
+  customerId: string;
+  customerName: string;
+  orderId: string;
+  orderNumber: string;
+  returnId: string;
+  amount: number;
+  reason: string;
+  status: CreditNoteStatus;
+  createdAt: string;
+  createdBy: string;
+}
+
+export interface RiderSettlement {
+  id: string;
+  settlementNumber: string;
+  riderId: string;
+  runId?: string;
+  date: string;
+  cashExpected: number;
+  cashReceived: number;
+  /** Packs of returned goods the rider should hand over. */
+  goodsExpected: number;
+  goodsReceived: number;
+  status: 'BALANCED' | 'SHORTAGE';
+  note?: string;
+  settledBy: string;
+  settledAt: string;
+}
+
+/* ------------------------------------------------------------------ */
+/* Notifications & settings                                            */
+/* ------------------------------------------------------------------ */
+
+export interface AppNotification {
+  id: string;
+  title: string;
+  body: string;
+  at: string;
+  module: PermissionModule;
+  href: string;
+  tone: 'info' | 'success' | 'warning' | 'danger';
+  read: boolean;
+}
+
+export interface AppSettings {
+  company: {
+    legalName: string;
+    tradeName: string;
+    ownerName: string;
+    phone: string;
+    email: string;
+    website: string;
+    address: string;
+    tradeLicenseNo: string;
+    drugLicenseNo: string;
+    binNo: string;
+    tinNo: string;
+  };
+  tax: {
+    vatEnabled: boolean;
+    vatPct: number;
+    pricesIncludeVat: boolean;
+    roundTo: 0 | 1 | 5;
+  };
+  invoice: {
+    orderPrefix: string;
+    invoicePrefix: string;
+    challanPrefix: string;
+    creditNotePrefix: string;
+    nextNumber: number;
+    defaultFormat: 'A4' | 'THERMAL_80MM';
+    footerNote: string;
+    showBatchOnInvoice: boolean;
+  };
+  payments: { id: PaymentChannel; label: string; enabled: boolean; accountRef?: string }[];
+  credit: {
+    defaultCreditLimit: number;
+    defaultTermsDays: number;
+    blockOverLimitOrders: boolean;
+  };
+  delivery: {
+    proofRequired: 'OTP' | 'SIGNATURE' | 'PHOTO' | 'NONE';
+    allowPartialDelivery: boolean;
+    sameDayCutoff: string;
+    maxStopsPerRun: number;
+    riderCashLimit: number;
+  };
+  returns: {
+    returnWindowDays: number;
+    requirePhotoForDamage: boolean;
+    autoRestockSellable: boolean;
+    approvalThreshold: number;
+    reasons: { id: ReturnReason; label: string; enabled: boolean }[];
+  };
+  notifications: {
+    id: string;
+    event: string;
+    channels: { sms: boolean; whatsapp: boolean; email: boolean; inApp: boolean };
+    template: string;
+  }[];
+  security: {
+    sessionTimeoutMinutes: number;
+    enforceTwoFactorForAdmins: boolean;
+    passwordMinLength: number;
+  };
 }

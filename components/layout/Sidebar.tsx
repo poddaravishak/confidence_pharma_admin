@@ -1,162 +1,211 @@
 "use client";
 
-import React from "react";
+import React, { useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  LayoutDashboard,
-  Pill,
-  Users,
-  ShoppingCart,
-  Truck,
+  BarChart3,
+  Boxes,
   Building2,
-  DollarSign,
-  TrendingUp,
-  Search,
-  MessageSquare,
-  ShieldCheck,
   FileText,
-  Boxes
+  HandCoins,
+  Receipt,
+  LayoutDashboard,
+  MessageSquare,
+  Pill,
+  RotateCcw,
+  Search,
+  Settings,
+  ShieldCheck,
+  ShoppingCart,
+  TrendingUp,
+  Truck,
+  UserCog,
+  Users,
+  Wallet,
+  X,
 } from "lucide-react";
+import { PermissionModule } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { useAppStore } from "@/lib/store/AppStore";
+import { useInventory } from "@/components/inventory/InventoryProvider";
 
-interface NavGroup {
+interface NavItem {
   label: string;
-  items: {
-    label: string;
-    href: string;
-    icon: React.ComponentType<{ className?: string }>;
-    badge?: string | number;
-    badgeColor?: string;
-  }[];
+  href: string;
+  icon: React.ComponentType<{ className?: string }>;
+  module: PermissionModule;
+  badgeKey?: "orders" | "delivery" | "returns" | "customers" | "inventory" | "messages";
 }
 
-const navGroups: NavGroup[] = [
+const navGroups: { label: string; items: NavItem[] }[] = [
   {
-    label: "Main Operations",
+    label: "Overview",
     items: [
-      { label: "Executive Dashboard", href: "/", icon: LayoutDashboard },
-      { label: "Orders & Pipeline", href: "/orders", icon: ShoppingCart, badge: "3", badgeColor: "bg-brand-blue" },
-      { label: "Delivery & Fleet Logistics", href: "/delivery", icon: Truck, badge: "Live", badgeColor: "bg-brand-green" },
-      { label: "Catalog & Pricing Tiers", href: "/catalog", icon: Pill },
-      { label: "B2B Customers & KYC", href: "/customers", icon: Users, badge: "2", badgeColor: "bg-amber-500" },
+      { label: "Dashboard", href: "/", icon: LayoutDashboard, module: "dashboard" },
+      { label: "Analytics & reports", href: "/analytics", icon: BarChart3, module: "analytics" },
     ],
   },
   {
-    label: "Inventory & Purchasing",
+    label: "Sales & delivery",
     items: [
-      { label: "Purchase Entry (OCR)", href: "/purchases", icon: FileText },
-      { label: "Inventory & FEFO Batches", href: "/inventory", icon: Boxes, badge: "Alert", badgeColor: "bg-rose-500" },
-      { label: "Suppliers & Payables", href: "/suppliers", icon: Building2 },
+      { label: "Orders", href: "/orders", icon: ShoppingCart, module: "orders", badgeKey: "orders" },
+      { label: "Delivery & riders", href: "/delivery", icon: Truck, module: "delivery", badgeKey: "delivery" },
+      { label: "Returns", href: "/returns", icon: RotateCcw, module: "returns", badgeKey: "returns" },
+      { label: "Customers & KYC", href: "/customers", icon: Users, module: "customers", badgeKey: "customers" },
     ],
   },
   {
-    label: "Financials & Management",
+    label: "Inventory & purchasing",
     items: [
-      { label: "Cash, Bank & MFS", href: "/accounts", icon: DollarSign },
-      { label: "Real-Time Profit & Loss", href: "/accounts/profit-loss", icon: TrendingUp },
+      { label: "Products & catalog", href: "/catalog", icon: Pill, module: "catalog" },
+      { label: "Inventory", href: "/inventory", icon: Boxes, module: "inventory", badgeKey: "inventory" },
+      { label: "Purchase entry", href: "/purchases", icon: FileText, module: "purchases" },
+      { label: "Suppliers & payables", href: "/suppliers", icon: Building2, module: "suppliers" },
     ],
   },
   {
-    label: "Intelligence & Security",
+    label: "Finance",
     items: [
-      { label: "Search Analytics (BI)", href: "/analytics/searches", icon: Search },
-      { label: "Customer Inquiries", href: "/messages", icon: MessageSquare, badge: "1", badgeColor: "bg-brand-blue" },
-      { label: "Audit Logs & Security", href: "/settings/audit-logs", icon: ShieldCheck },
+      { label: "Cash, bank & MFS", href: "/accounts", icon: Wallet, module: "accounts" },
+      { label: "Customer dues", href: "/accounts/receivables", icon: HandCoins, module: "accounts" },
+      { label: "Expenses & payroll", href: "/accounts/expenses", icon: Receipt, module: "accounts" },
+      { label: "Profit & loss", href: "/accounts/profit-loss", icon: TrendingUp, module: "accounts" },
+    ],
+  },
+  {
+    label: "Engagement",
+    items: [
+      { label: "Search analytics", href: "/analytics/searches", icon: Search, module: "analytics" },
+      { label: "Customer inquiries", href: "/messages", icon: MessageSquare, module: "messages", badgeKey: "messages" },
+    ],
+  },
+  {
+    label: "Administration",
+    items: [
+      { label: "Settings", href: "/settings", icon: Settings, module: "settings" },
+      { label: "Users & roles", href: "/settings/users", icon: UserCog, module: "users" },
+      { label: "Audit logs", href: "/settings/audit-logs", icon: ShieldCheck, module: "audit" },
     ],
   },
 ];
 
 const allHrefs = navGroups.flatMap((g) => g.items.map((i) => i.href));
 
-/** The most specific nav link that matches the current path (so /inventory/batches highlights Inventory). */
+/** The most specific nav link matching the current path (so /inventory/batches highlights Inventory). */
 function activeHref(pathname: string): string | undefined {
+  const special = pathname.startsWith("/settings/roles") ? "/settings/users" : undefined;
+  if (special) return special;
   return allHrefs
     .filter((href) => pathname === href || (href !== "/" && pathname.startsWith(`${href}/`)))
     .sort((a, b) => b.length - a.length)[0];
 }
 
-export const Sidebar: React.FC = () => {
+export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const pathname = usePathname();
   const current = activeHref(pathname);
+  const { can, orders, runs, returns, customers, currentRole, settings } = useAppStore();
+  const { items, stockByItem } = useInventory();
+
+  useEffect(() => {
+    onClose();
+    // Close the mobile drawer on navigation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname]);
+
+  const badges: Record<NonNullable<NavItem["badgeKey"]>, { value: number; tone: string }> = {
+    orders: { value: orders.filter((o) => o.orderStatus === "PLACED").length, tone: "bg-brand-blue" },
+    delivery: { value: runs.filter((r) => r.status !== "SETTLED").length, tone: "bg-brand-green" },
+    returns: {
+      value: returns.filter((r) => r.status === "REQUESTED" || r.status === "RECEIVED" || r.status === "IN_TRANSIT").length,
+      tone: "bg-amber-500",
+    },
+    customers: {
+      value: customers.filter((c) => c.verificationStatus === "PENDING" || c.verificationStatus === "UNDER_REVIEW").length,
+      tone: "bg-amber-500",
+    },
+    inventory: { value: items.filter((i) => stockByItem[i.id]?.status !== "IN_STOCK").length, tone: "bg-rose-500" },
+    messages: { value: 1, tone: "bg-brand-blue" },
+  };
+
+  const visibleGroups = navGroups
+    .map((g) => ({ ...g, items: g.items.filter((i) => can(i.module)) }))
+    .filter((g) => g.items.length > 0);
 
   return (
-    <aside className="sticky top-0 flex h-dvh w-64 flex-col border-r border-slate-200/80 bg-white">
-      {/* Official Brand Header with Logo */}
-      <div className="flex h-24 items-center justify-center border-b border-slate-100 px-4 py-3 bg-white">
-        <Link href="/" className="flex items-center justify-center w-full" aria-label="Confidence Pharma Home">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/images/confidence-pharma-logo.jpg"
-            alt="Confidence Pharma • B2B Healthcare Marketplace"
-            className="w-full h-auto max-h-16 max-w-[216px] object-contain transition duration-200 hover:scale-[1.02]"
-          />
-        </Link>
-      </div>
+    <>
+      {/* Mobile backdrop */}
+      <div
+        className={cn("fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-sm transition-opacity lg:hidden", open ? "opacity-100" : "pointer-events-none opacity-0")}
+        onClick={onClose}
+        aria-hidden
+      />
+      <aside
+        className={cn(
+          "fixed inset-y-0 left-0 z-50 flex h-dvh w-64 flex-col border-r border-slate-200/80 bg-white transition-transform lg:sticky lg:top-0 lg:z-auto lg:translate-x-0",
+          open ? "translate-x-0 shadow-xl" : "-translate-x-full"
+        )}
+        aria-label="Main navigation"
+      >
+        <div className="flex h-16 items-center justify-between gap-2 border-b border-slate-100 px-4">
+          <Link href="/" className="flex min-w-0 items-center" aria-label={`${settings.company.tradeName} home`}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/images/confidence-pharma-logo.jpg" alt={settings.company.tradeName} className="h-10 w-auto max-w-[190px] object-contain" />
+          </Link>
+          <button onClick={onClose} aria-label="Close menu" className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 lg:hidden">
+            <X className="size-5" />
+          </button>
+        </div>
 
-      {/* Nav Link Groups */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-6">
-        {navGroups.map((group, groupIdx) => (
-          <div key={groupIdx}>
-            <p className="px-2.5 mb-2 text-[10px] font-bold uppercase tracking-wider text-apptext-secondary/70">
-              {group.label}
-            </p>
-            <div className="space-y-1">
-              {group.items.map((item) => {
-                const isActive = current === item.href;
-                const Icon = item.icon;
-
-                return (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    className={cn(
-                      "group flex items-center justify-between rounded-xl px-3 py-2 text-xs font-semibold transition-all",
-                      isActive
-                        ? "bg-brand-light/70 text-brand-primary font-bold shadow-xs border border-brand-light"
-                        : "text-apptext-secondary hover:bg-surface hover:text-apptext-primary"
-                    )}
-                  >
-                    <div className="flex items-center gap-3">
-                      <Icon
+        <nav className="flex-1 space-y-5 overflow-y-auto px-3 py-4">
+          {visibleGroups.map((group) => (
+            <div key={group.label}>
+              <p className="mb-1.5 px-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">{group.label}</p>
+              <ul className="space-y-0.5">
+                {group.items.map((item) => {
+                  const isActive = current === item.href;
+                  const Icon = item.icon;
+                  const badge = item.badgeKey ? badges[item.badgeKey] : undefined;
+                  return (
+                    <li key={item.href}>
+                      <Link
+                        href={item.href}
+                        aria-current={isActive ? "page" : undefined}
                         className={cn(
-                          "size-4 transition-colors",
-                          isActive
-                            ? "text-brand-primary"
-                            : "text-slate-400 group-hover:text-brand-blue"
-                        )}
-                      />
-                      <span>{item.label}</span>
-                    </div>
-
-                    {item.badge && (
-                      <span
-                        className={cn(
-                          "flex h-4 min-w-4 items-center justify-center rounded-full px-1.5 text-[9px] font-bold text-white tabular-nums shadow-xs",
-                          item.badgeColor || "bg-brand-primary"
+                          "group flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm font-medium transition",
+                          isActive ? "bg-brand-light/70 text-brand-primary" : "text-slate-600 hover:bg-surface hover:text-apptext-primary"
                         )}
                       >
-                        {item.badge}
-                      </span>
-                    )}
-                  </Link>
-                );
-              })}
+                        <span className="flex items-center gap-3">
+                          <Icon className={cn("size-4", isActive ? "text-brand-primary" : "text-slate-400 group-hover:text-brand-blue")} />
+                          {item.label}
+                        </span>
+                        {badge && badge.value > 0 && (
+                          <span className={cn("flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[11px] font-semibold tabular-nums text-white", badge.tone)}>
+                            {badge.value}
+                          </span>
+                        )}
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </nav>
 
-      {/* Bottom Footer Details */}
-      <div className="border-t border-slate-100 p-4 bg-surface/50">
-        <div className="flex items-center justify-between text-[11px] text-apptext-secondary">
-          <span className="font-medium">Confidence Pharma Core</span>
-          <span className="flex items-center gap-1 font-bold text-brand-green">
-            <span className="size-2 rounded-full bg-brand-green animate-pulse" />
-            Online
-          </span>
+        <div className="border-t border-slate-100 bg-surface/60 px-4 py-3">
+          <div className="flex items-center justify-between text-xs text-apptext-secondary">
+            <span>
+              Signed in as <span className="font-medium text-apptext-primary">{currentRole?.name}</span>
+            </span>
+            <span className="flex items-center gap-1 font-medium text-emerald-600">
+              <span className="size-1.5 rounded-full bg-emerald-500" />
+              Online
+            </span>
+          </div>
         </div>
-      </div>
-    </aside>
+      </aside>
+    </>
   );
-};
+}

@@ -1,103 +1,129 @@
 "use client";
 
 import React from "react";
-import { 
-  TrendingUp, 
-  DollarSign, 
-  Package, 
-  Users, 
-  Truck, 
-  Clock 
-} from "lucide-react";
-import { formatCurrency } from "@/lib/utils";
+import { Boxes, HandCoins, Percent, ReceiptText, ShoppingCart, TrendingUp } from "lucide-react";
+import { KpiCard } from "@/components/analytics/primitives";
+import { num, pct, taka, takaCompact } from "@/components/analytics/format";
+import { SERIES } from "@/components/analytics/theme";
+import { cn } from "@/lib/utils";
 
-interface MetricCardsProps {
-  todaySales: number;
-  monthNetProfit: number;
-  stockValuation: number;
-  customerDue: number;
-  supplierPayable: number;
+export interface KpiDatum {
+  value: number;
+  change: number | null;
+  spark: number[];
 }
 
-export const MetricCards: React.FC<MetricCardsProps> = ({
-  todaySales,
-  monthNetProfit,
-  stockValuation,
-  customerDue,
-  supplierPayable,
-}) => {
-  const cards = [
-    {
-      title: "Today's Gross Sales",
-      amount: formatCurrency(todaySales),
-      subtitle: "+18.4% from yesterday",
-      icon: TrendingUp,
-      color: "text-brand-primary",
-      bgColor: "bg-brand-light",
-      borderColor: "border-brand-blue/30",
-    },
-    {
-      title: "Net Profit (COGS Adj.)",
-      amount: formatCurrency(monthNetProfit),
-      subtitle: "Weighted avg cost calculated",
-      icon: DollarSign,
-      color: "text-brand-green",
-      bgColor: "bg-emerald-50",
-      borderColor: "border-emerald-200",
-    },
-    {
-      title: "Warehouse Stock Value",
-      amount: formatCurrency(stockValuation),
-      subtitle: "5 active product lines in stock",
-      icon: Package,
-      color: "text-brand-blue",
-      bgColor: "bg-blue-50",
-      borderColor: "border-blue-200",
-    },
-    {
-      title: "Customer Outstanding Due",
-      amount: formatCurrency(customerDue),
-      subtitle: "3 pharmacies with balance",
-      icon: Users,
-      color: "text-amber-600",
-      bgColor: "bg-amber-50",
-      borderColor: "border-amber-200",
-    },
-    {
-      title: "Supplier Payables Due",
-      amount: formatCurrency(supplierPayable),
-      subtitle: "Beximco & Square depots",
-      icon: Clock,
-      color: "text-rose-600",
-      bgColor: "bg-rose-50",
-      borderColor: "border-rose-200",
-    },
-  ];
+export interface MetricCardsProps {
+  compareLabel: string;
+  revenue?: KpiDatum;
+  grossProfit?: KpiDatum & { margin: number };
+  orders?: KpiDatum;
+  aov?: KpiDatum;
+  dues?: KpiDatum & { accounts: number; overdueShare: number };
+  inventory?: KpiDatum & { skus: number };
+}
 
-  return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
-      {cards.map((card, idx) => {
-        const Icon = card.icon;
-        return (
-          <div
-            key={idx}
-            className={`rounded-2xl border ${card.borderColor} bg-white p-4 shadow-xs transition hover:shadow-md`}
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-apptext-secondary">{card.title}</span>
-              <div className={`rounded-xl p-2.5 ${card.bgColor}`}>
-                <Icon className={`h-4 w-4 ${card.color}`} />
-              </div>
-            </div>
-            <div className="mt-3">
-              <h3 className="text-xl font-black tracking-tight text-brand-primary font-mono">
-                {card.amount}
-              </h3>
-              <p className="mt-1 text-[11px] text-apptext-secondary font-medium">{card.subtitle}</p>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
+/** Column layout per number of visible tiles, so a row never ends with an orphan. */
+const GRID: Record<number, string> = {
+  1: "min-[420px]:grid-cols-1",
+  2: "",
+  3: "lg:grid-cols-3",
+  4: "lg:grid-cols-4",
+  5: "lg:grid-cols-3 2xl:grid-cols-5",
+  6: "lg:grid-cols-3 2xl:grid-cols-6",
 };
+
+/** Executive KPI row. Pass only the KPIs the signed-in role may see. */
+export function MetricCards({ compareLabel, revenue, grossProfit, orders, aov, dues, inventory }: MetricCardsProps) {
+  const cards: React.ReactNode[] = [];
+  if (revenue)
+    cards.push(
+      <KpiCard
+        key="revenue"
+        label="Net sales"
+        icon={TrendingUp}
+        value={<span title={taka(revenue.value)}>{takaCompact(revenue.value)}</span>}
+        delta={revenue.change}
+        compareLabel={compareLabel}
+        spark={revenue.spark}
+        sparkColor={SERIES.revenue}
+        href="/analytics"
+      />
+    );
+  if (grossProfit)
+    cards.push(
+      <KpiCard
+        key="gp"
+        label="Gross profit"
+        icon={Percent}
+        value={
+          <span>
+            <span title={taka(grossProfit.value)}>{takaCompact(grossProfit.value)}</span>
+            <span className="ml-1.5 text-sm font-medium text-apptext-secondary">{pct(grossProfit.margin)} margin</span>
+          </span>
+        }
+        delta={grossProfit.change}
+        compareLabel={compareLabel}
+        spark={grossProfit.spark}
+        sparkColor={SERIES.profit}
+        href="/accounts/profit-loss"
+      />
+    );
+  if (orders)
+    cards.push(
+      <KpiCard
+        key="orders"
+        label="Orders"
+        icon={ShoppingCart}
+        value={num(orders.value)}
+        delta={orders.change}
+        compareLabel={compareLabel}
+        spark={orders.spark}
+        href="/orders"
+      />
+    );
+  if (aov)
+    cards.push(
+      <KpiCard
+        key="aov"
+        label="Avg order value"
+        icon={ReceiptText}
+        value={taka(aov.value)}
+        delta={aov.change}
+        compareLabel={compareLabel}
+        spark={aov.spark}
+      />
+    );
+  if (dues)
+    cards.push(
+      <KpiCard
+        key="dues"
+        label="Customer dues"
+        icon={HandCoins}
+        value={<span title={taka(dues.value)}>{takaCompact(dues.value)}</span>}
+        delta={dues.change}
+        upIsGood={false}
+        hint={`${dues.accounts} accounts · ${pct(dues.overdueShare, 0)} over 30 days`}
+        spark={dues.spark}
+        sparkColor={SERIES.loss}
+        href="/customers"
+      />
+    );
+  if (inventory)
+    cards.push(
+      <KpiCard
+        key="inv"
+        label="Inventory value"
+        icon={Boxes}
+        value={<span title={taka(inventory.value)}>{takaCompact(inventory.value)}</span>}
+        delta={inventory.change}
+        compareLabel={compareLabel}
+        spark={inventory.spark}
+        sparkColor={SERIES.cogs}
+        href="/inventory"
+      />
+    );
+
+  if (!cards.length) return null;
+  return <div className={cn("grid grid-cols-1 gap-3 min-[420px]:grid-cols-2", GRID[cards.length])}>{cards}</div>;
+}

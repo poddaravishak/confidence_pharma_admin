@@ -509,3 +509,192 @@ CREATE INDEX idx_orders_customer ON orders(customer_id, created_at DESC);
 CREATE INDEX idx_orders_status ON orders(order_status);
 CREATE INDEX idx_search_zero_result ON search_analytics_logs(is_zero_result, searched_at DESC);
 
+
+-- =============================================================================
+-- 12. EXTENSIONS (2026-11): RBAC ACTIONS, DELIVERY RUNS, PARTIAL DELIVERY,
+--     RETURNS PIPELINE, CREDIT NOTES, RIDER SETTLEMENT, SETTINGS
+-- Mirrors the demo store in lib/store/AppStore.tsx and lib/types/index.ts.
+-- =============================================================================
+
+-- Permissions are module × action (view, create, edit, delete, approve, export).
+ALTER TABLE permissions ADD COLUMN IF NOT EXISTS action VARCHAR(20) NOT NULL DEFAULT 'view';
+ALTER TABLE roles ADD COLUMN IF NOT EXISTS home_path VARCHAR(100) DEFAULT '/';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'ACTIVE';      -- ACTIVE, INACTIVE, INVITED
+ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_enabled BOOLEAN DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS rider_id UUID;                             -- links a login to delivery_personnel
+
+CREATE TABLE IF NOT EXISTS warehouses (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    code VARCHAR(10) UNIQUE NOT NULL,
+    name VARCHAR(150) NOT NULL,
+    address TEXT,
+    manager_user_id UUID REFERENCES users(id),
+    has_cold_room BOOLEAN DEFAULT FALSE,
+    is_primary BOOLEAN DEFAULT FALSE
+);
+
+ALTER TABLE inventory_batches ADD COLUMN IF NOT EXISTS location VARCHAR(50);
+ALTER TABLE inventory_batches ADD COLUMN IF NOT EXISTS hold VARCHAR(20) DEFAULT 'NONE';  -- NONE, QUARANTINE, RECALLED
+ALTER TABLE inventory_batches ADD COLUMN IF NOT EXISTS hold_reason TEXT;
+
+-- Every stock change, signed, in base units. Delivery returns post DELIVERY_RETURN_IN.
+CREATE TABLE IF NOT EXISTS stock_movements (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    product_id UUID NOT NULL REFERENCES products(id),
+    batch_id UUID NOT NULL REFERENCES inventory_batches(id),
+    warehouse_id UUID NOT NULL REFERENCES warehouses(id),
+    movement_type VARCHAR(30) NOT NULL, -- PURCHASE_IN, SALE_OUT, DELIVERY_RETURN_IN, CUSTOMER_RETURN, SUPPLIER_RETURN,
+                                        -- ADJUSTMENT_IN/OUT, DAMAGE, EXPIRY_DISPOSAL, TRANSFER_IN/OUT, OPENING_STOCK
+    quantity INT NOT NULL,
+    unit_cost NUMERIC(10, 2) NOT NULL,
+    reference VARCHAR(50) NOT NULL,     -- order no., return no., adjustment id …
+    note TEXT,
+    performed_by UUID REFERENCES users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Order lines record what the customer actually kept.
+ALTER TABLE order_items ADD COLUMN IF NOT EXISTS units_per_pack INT;
+ALTER TABLE order_items ADD COLUMN IF NOT EXISTS delivered_quantity INT;
+ALTER TABLE order_items ADD COLUMN IF NOT EXISTS returned_quantity INT DEFAULT 0;
+ALTER TABLE order_items ADD COLUMN IF NOT EXISTS return_reason VARCHAR(30);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS original_grand_total NUMERIC(12, 2); -- before doorstep revision
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS failure_reason TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
+-- order_status gains PARTIALLY_DELIVERED.
+
+CREATE TABLE IF NOT EXISTS order_batch_allocations (
+    order_item_id UUID NOT NULL REFERENCES order_items(id) ON DELETE CASCADE,
+    batch_id UUID NOT NULL REFERENCES inventory_batches(id),
+    quantity INT NOT NULL, -- base units picked FEFO at dispatch
+    PRIMARY KEY (order_item_id, batch_id)
+);
+
+CREATE TABLE IF NOT EXISTS order_events (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    status VARCHAR(30) NOT NULL,
+    label VARCHAR(100) NOT NULL,
+    note TEXT,
+    performed_by UUID REFERENCES users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS delivery_runs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    run_number VARCHAR(30) UNIQUE NOT NULL,
+    rider_id UUID NOT NULL,
+    run_date DATE NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'LOADING', -- LOADING, IN_PROGRESS, RETURNING, SETTLED
+    load_verified BOOLEAN DEFAULT FALSE,
+    created_by UUID REFERENCES users(id),
+    started_at TIMESTAMPTZ,
+    settled_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS delivery_run_stops (
+    run_id UUID NOT NULL REFERENCES delivery_runs(id) ON DELETE CASCADE,
+    order_id UUID NOT NULL REFERENCES orders(id),
+    stop_sequence INT NOT NULL,
+    PRIMARY KEY (run_id, order_id)
+);
+
+CREATE TABLE IF NOT EXISTS delivery_proofs (
+    order_id UUID PRIMARY KEY REFERENCES orders(id),
+    method VARCHAR(20) NOT NULL,          -- OTP, SIGNATURE, PHOTO
+    received_by VARCHAR(150),
+    otp_verified BOOLEAN DEFAULT FALSE,
+    photo_urls TEXT[],
+    payment_channel VARCHAR(20) NOT NULL, -- CASH, BKASH, NAGAD, BANK, CREDIT
+    amount_collected NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    captured_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Replaces the simple customer_returns table above for new data.
+CREATE TABLE IF NOT EXISTS returns (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    return_number VARCHAR(30) UNIQUE NOT NULL,
+    source VARCHAR(20) NOT NULL,   -- PARTIAL_DELIVERY, FAILED_DELIVERY, CUSTOMER_RMA
+    status VARCHAR(20) NOT NULL,   -- REQUESTED, APPROVED, REJECTED, IN_TRANSIT, RECEIVED, COMPLETED
+    order_id UUID NOT NULL REFERENCES orders(id),
+    customer_id UUID NOT NULL REFERENCES customers(id),
+    rider_id UUID,
+    run_id UUID REFERENCES delivery_runs(id),
+    total_value NUMERIC(12, 2) NOT NULL,
+    shortage_quantity INT DEFAULT 0,
+    note TEXT,
+    rejected_reason TEXT,
+    created_by UUID REFERENCES users(id),
+    approved_by UUID REFERENCES users(id),
+    received_by UUID REFERENCES users(id),
+    inspected_by UUID REFERENCES users(id),
+    received_at TIMESTAMPTZ,
+    inspected_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS return_lines (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    return_id UUID NOT NULL REFERENCES returns(id) ON DELETE CASCADE,
+    order_item_id UUID NOT NULL REFERENCES order_items(id),
+    product_id UUID NOT NULL REFERENCES products(id),
+    batch_id UUID REFERENCES inventory_batches(id),
+    quantity INT NOT NULL,            -- packs expected back
+    units_per_pack INT NOT NULL,
+    unit_price NUMERIC(10, 2) NOT NULL,
+    reason VARCHAR(30) NOT NULL,
+    received_quantity INT,
+    sellable_quantity INT,            -- restocked to batch_id
+    damaged_quantity INT,             -- moved to a quarantine batch
+    damage_condition VARCHAR(20)      -- DAMAGED, EXPIRED
+);
+
+CREATE TABLE IF NOT EXISTS credit_notes (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    credit_note_number VARCHAR(30) UNIQUE NOT NULL,
+    customer_id UUID NOT NULL REFERENCES customers(id),
+    order_id UUID NOT NULL REFERENCES orders(id),
+    return_id UUID NOT NULL REFERENCES returns(id),
+    amount NUMERIC(12, 2) NOT NULL,
+    reason TEXT,
+    status VARCHAR(20) NOT NULL DEFAULT 'ISSUED', -- ISSUED, APPLIED, REFUNDED
+    created_by UUID REFERENCES users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS rider_settlements (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    settlement_number VARCHAR(30) UNIQUE NOT NULL,
+    rider_id UUID NOT NULL,
+    run_id UUID REFERENCES delivery_runs(id),
+    settlement_date DATE NOT NULL,
+    cash_expected NUMERIC(12, 2) NOT NULL,
+    cash_received NUMERIC(12, 2) NOT NULL,
+    goods_expected INT NOT NULL DEFAULT 0,
+    goods_received INT NOT NULL DEFAULT 0,
+    status VARCHAR(20) NOT NULL,   -- BALANCED, SHORTAGE
+    note TEXT,
+    settled_by UUID REFERENCES users(id),
+    settled_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id),   -- NULL = broadcast to every user with module access
+    module VARCHAR(30) NOT NULL,
+    title VARCHAR(150) NOT NULL,
+    body TEXT,
+    href VARCHAR(200),
+    tone VARCHAR(10) DEFAULT 'info',
+    is_read BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Key/value settings grouped by section (company, tax, invoice, payments, credit, delivery, returns, notifications, security).
+CREATE TABLE IF NOT EXISTS app_settings (
+    section VARCHAR(30) PRIMARY KEY,
+    value JSONB NOT NULL,
+    updated_by UUID REFERENCES users(id),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);

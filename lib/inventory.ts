@@ -200,6 +200,8 @@ export const MOVEMENT_META: Record<StockMovementType, { label: string; badge: st
   EXPIRY_DISPOSAL: { label: "Expired disposal", badge: "bg-rose-50 text-rose-700 border-rose-200" },
   TRANSFER_OUT: { label: "Transfer out", badge: "bg-violet-50 text-violet-700 border-violet-200" },
   TRANSFER_IN: { label: "Transfer in", badge: "bg-violet-50 text-violet-700 border-violet-200" },
+  DELIVERY_RETURN_IN: { label: "Delivery return (restocked)", badge: "bg-teal-50 text-teal-700 border-teal-200" },
+  OPENING_STOCK: { label: "Opening stock", badge: "bg-emerald-50 text-emerald-700 border-emerald-200" },
 };
 
 export const REASON_META: Record<AdjustmentReason, { label: string; hint: string; direction: "in" | "out" | "both" }> = {

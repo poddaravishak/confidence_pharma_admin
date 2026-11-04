@@ -1,74 +1,74 @@
 "use client";
 
-import React from "react";
+import React, { useMemo } from "react";
 import Link from "next/link";
-import { InventoryBatch } from "@/lib/types";
-import { AlertTriangle, Clock, ArrowRight } from "lucide-react";
+import { useInventory } from "@/components/inventory/InventoryProvider";
+import { EXPIRY_META, batchState, daysUntil, expiryBucket, expiryText, formatPacks } from "@/lib/inventory";
+import { Badge } from "@/components/ui";
+import { ChartCard } from "@/components/analytics/primitives";
+import { useInventoryHealth } from "./InventoryHealth";
 
-interface StockAlertsProps {
-  batches: InventoryBatch[];
-}
+/** The most urgent stock problems: out-of-stock and low items, then the batches expiring first. */
+export function StockAlerts({ limit = 6 }: { limit?: number }) {
+  const { batches, itemById } = useInventory();
+  const health = useInventoryHealth();
 
-export const StockAlerts: React.FC<StockAlertsProps> = ({ batches }) => {
+  const rows = useMemo(() => {
+    const list: { id: string; title: string; detail: string; badge: React.ReactNode; href: string }[] = [];
+    for (const s of health.out)
+      list.push({
+        id: `out-${s.item.id}`,
+        title: s.item.name,
+        detail: `Reorder level ${formatPacks(s.item.reorderLevel, s.item)}`,
+        badge: <Badge className="border-rose-200 bg-rose-50 text-rose-700">Out of stock</Badge>,
+        href: "/inventory/reorder",
+      });
+    for (const s of health.low)
+      list.push({
+        id: `low-${s.item.id}`,
+        title: s.item.name,
+        detail: `${formatPacks(s.stock.sellable, s.item)} left${s.stock.daysOfCover !== null ? ` · ${s.stock.daysOfCover} days of cover` : ""}`,
+        badge: <Badge className="border-amber-200 bg-amber-50 text-amber-800">Low stock</Badge>,
+        href: "/inventory/reorder",
+      });
+    const expiring = batches
+      .filter((b) => b.availableQuantity > 0 && batchState(b) === "AVAILABLE" && daysUntil(b.expiryDate) <= 90)
+      .sort((a, b) => a.expiryDate.localeCompare(b.expiryDate));
+    for (const b of expiring) {
+      const item = itemById[b.itemId];
+      if (!item) continue;
+      const d = daysUntil(b.expiryDate);
+      const meta = EXPIRY_META[expiryBucket(d)];
+      list.push({
+        id: `exp-${b.id}`,
+        title: item.name,
+        detail: `Batch ${b.batchNumber} · ${formatPacks(b.availableQuantity, item)}`,
+        badge: <Badge className={meta.badge}>{expiryText(d)}</Badge>,
+        href: `/inventory/batches?view=${expiryBucket(d)}`,
+      });
+    }
+    return list.slice(0, limit);
+  }, [health, batches, itemById, limit]);
+
   return (
-    <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-xs">
-      <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-        <div className="flex items-center gap-2">
-          <div className="rounded-xl bg-amber-50 p-2 text-amber-600">
-            <AlertTriangle className="h-4 w-4" />
-          </div>
-          <div>
-            <h2 className="text-sm font-bold text-brand-primary">Urgent FEFO & Stock Alerts</h2>
-            <p className="text-xs text-apptext-secondary">First-Expiry, First-Out alerts</p>
-          </div>
-        </div>
-        <Link
-          href="/inventory"
-          className="text-xs font-bold text-brand-blue hover:text-brand-primary flex items-center gap-1 transition"
-        >
-          <span>Batch Matrix</span>
-          <ArrowRight className="h-3 w-3" />
-        </Link>
-      </div>
-
-      <div className="mt-4 space-y-3">
-        {batches.map((batch) => {
-          const isNearExpiry = batch.status === "NEAR_EXPIRY";
-          return (
-            <div
-              key={batch.id}
-              className={`flex items-start justify-between rounded-xl border p-3 ${
-                isNearExpiry
-                  ? "border-amber-200 bg-amber-50/40"
-                  : "border-slate-200 bg-surface/50"
-              }`}
-            >
-              <div>
-                <p className="text-xs font-bold text-apptext-primary">{batch.productName}</p>
-                <div className="mt-1 flex items-center gap-2 text-[11px] text-apptext-secondary">
-                  <span className="font-mono font-bold text-brand-primary">Batch: {batch.batchNumber}</span>
-                  <span>•</span>
-                  <span>Stock: {batch.availableQuantity} units</span>
-                </div>
-              </div>
-
-              <div className="text-right">
-                {isNearExpiry ? (
-                  <div className="flex items-center gap-1 text-[11px] font-bold text-amber-700">
-                    <Clock className="h-3.5 w-3.5 text-amber-600" />
-                    <span>Exp in {batch.daysUntilExpiry} days</span>
-                  </div>
-                ) : (
-                  <span className="inline-block rounded-md bg-rose-50 border border-rose-200 px-2 py-0.5 text-[10px] font-bold text-rose-700">
-                    Low Stock
-                  </span>
-                )}
-                <p className="text-[10px] text-slate-400 mt-0.5 font-mono">Exp: {batch.expiryDate}</p>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
+    <ChartCard title="Stock alerts" description="Reorder and FEFO priorities" footerLink={{ href: "/inventory/batches", label: "Batch register" }} bodyClassName="py-2">
+      {rows.length ? (
+        <ul className="divide-y divide-slate-100">
+          {rows.map((r) => (
+            <li key={r.id}>
+              <Link href={r.href} className="flex items-start justify-between gap-3 py-2.5 hover:bg-surface/60">
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-medium text-apptext-primary">{r.title}</span>
+                  <span className="block truncate text-xs text-apptext-secondary">{r.detail}</span>
+                </span>
+                <span className="shrink-0">{r.badge}</span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="py-8 text-center text-sm text-apptext-secondary">No stock alerts. Every product is above reorder level.</p>
+      )}
+    </ChartCard>
   );
-};
+}

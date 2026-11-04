@@ -2,7 +2,7 @@
 
 > **Web Admin Business Control Center**  
 > Developed for **Confidence Pharma** (Dr. TC Dey)  
-> Stack: **Next.js 15 (App Router)**, **React 19**, **Tailwind CSS**, **TypeScript**, **PostgreSQL**
+> Stack: **Next.js 16 (App Router)**, **React 19**, **Tailwind CSS**, **TypeScript**, **PostgreSQL**
 
 ---
 
@@ -65,6 +65,41 @@
 
 11. **Audit Logs & Security (`/settings/audit-logs`)**:
     - Immutable activity tracking for approvals, stock modifications, and financial actions (SRS §42 & §43).
+
+---
+
+## 🔐 Demo sign-in & roles
+
+Open `/login` and pick a role card (any password with 4+ characters works). The role decides which modules appear and which actions are allowed; the profile menu has **Switch demo user** to compare roles quickly.
+
+| Role | Lands on | Can do |
+|---|---|---|
+| Super Admin | Dashboard | Everything, including roles & permissions |
+| Operations Manager | Dashboard | All operations; view users |
+| Inventory Manager | Inventory | Catalog, stock, purchases, return inspection |
+| Warehouse Staff | Returns | Pack orders, receive and inspect returns |
+| Sales Executive | Orders | Create orders, customers, return requests |
+| Accountant | Accounts | Cash, dues, expenses, settlements, credit notes |
+| Dispatch Coordinator | Delivery | Runs, riders, settlement |
+| Delivery Rider | `/rider` (mobile) | Today's run, doorstep outcome, returns, cash |
+
+Roles are editable in **Settings → Roles & permissions** (module × action matrix).
+
+## 🚚 Partial delivery → return to inventory
+
+1. **Dispatch** (`/delivery`): select packed orders → assign rider → stock is issued FEFO and a load sheet is printed.
+2. **Rider app** (`/rider`): at the door choose *Delivered in full*, *Partial* (e.g. customer keeps 8 of 10 boxes, picks a reason) or *Failed*. The bill is recalculated live; OTP proof and payment are captured.
+3. The refused packs become a **return in rider custody** (`/returns`, "With rider").
+4. **Rider settlement** (`/delivery` → Rider settlement): count cash and returned packs; any mismatch is saved as a shortage.
+5. **Inspection** (`/returns/[id]`): sellable packs go back to the **original batch** (`DELIVERY_RETURN_IN` in `/inventory/movements`), damaged/expired go to a quarantine batch.
+6. A **credit note** is issued and everything is audit-logged.
+
+## 🗂️ State & data
+
+- All data is demo data held in React context: `lib/store/AppStore.tsx` (orders, runs, returns, users, settings…) on top of `components/inventory/InventoryProvider.tsx` (stock). A page reload resets the demo; only the sign-in is remembered.
+- Seed data: `lib/db/operations-data.ts`, `lib/db/rbac-data.ts`, `lib/db/catalog-data.ts`, `lib/db/analytics-data.ts` (seeded 190-day history), `lib/db/inventory-data.ts`.
+- Target PostgreSQL schema for the real backend: `lib/db/schema.sql` (section 12 covers the new tables).
+- Build plan and status: [`IMPLEMENTATION_CHECKLIST.md`](./IMPLEMENTATION_CHECKLIST.md).
 
 ---
 
