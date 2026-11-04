@@ -34,10 +34,14 @@
    - Order pipeline: Placed $\rightarrow$ Confirmed $\rightarrow$ Processing $\rightarrow$ Packed $\rightarrow$ Dispatched $\rightarrow$ Delivered.
    - Dual-format print invoicing: Standard A4 Tax Invoice & 80mm POS Thermal Receipt (SRS §36).
 
-5. **Inventory & FEFO Batches (`/inventory`)**:
-   - First-Expiry, First-Out (FEFO) dispensing matrix (SRS §24).
-   - 30/60/90 days near-expiry countdown alerts.
-   - Audit-logged manual stock adjustment modal (SRS §25).
+5. **Inventory Management (`/inventory/*`)** — UI on mock data (`lib/db/inventory-data.ts`), shared state across tabs:
+   - **Overview:** stock value, low/out-of-stock, expiring and blocked stock; product table in pack + base units with expandable FEFO batches.
+   - **Batches & expiry:** 30/60/90-day expiry profile (SRS §24), quarantine/release, expired disposal, return to supplier.
+   - **Stock movements:** full in/out ledger with filters and CSV export.
+   - **Adjustments:** audit-logged adjustments with cost impact; write-offs ≥ ৳10,000 need Super Admin approval (SRS §25).
+   - **Stock count:** physical/cycle counts (with blind count), variances posted as adjustments.
+   - **Reorder:** low-stock list with suggested quantities, grouped by supplier into draft purchase orders (SRS §21–§22).
+   - **Transfers:** multi-warehouse transfers (request → dispatch → receive) with cold-room checks.
 
 6. **Purchases & Assisted OCR (`/purchases`)**:
    - Physical invoice camera/PDF OCR assisted line extraction (SRS §19 & §20).

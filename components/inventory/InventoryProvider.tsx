@@ -1,0 +1,474 @@
+"use client";
+
+import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
+import { CheckCircle2, AlertTriangle, X } from "lucide-react";
+import {
+  AdjustmentReason,
+  BatchHold,
+  InventoryItem,
+  PurchaseOrderDraft,
+  StockAdjustment,
+  StockBatch,
+  StockCount,
+  StockMovement,
+  StockMovementType,
+  StockTransfer,
+  StockTransferLine,
+  Supplier,
+  Warehouse,
+} from "@/lib/types";
+import {
+  APPROVAL_THRESHOLD,
+  CURRENT_USER,
+  STAFF,
+  inventoryItems,
+  inventorySuppliers,
+  purchaseOrderDrafts,
+  stockAdjustments,
+  stockBatches,
+  stockCounts,
+  stockMovements,
+  stockTransfers,
+  warehouses,
+} from "@/lib/db/inventory-data";
+import { ItemStock, computeItemStock, movementTypeForReason } from "@/lib/inventory";
+
+type Toast = { id: number; message: string; tone: "success" | "warning" };
+export type WarehouseFilter = "ALL" | string;
+
+interface InventoryContextValue {
+  items: InventoryItem[];
+  warehouses: Warehouse[];
+  suppliers: Supplier[];
+  batches: StockBatch[];
+  movements: StockMovement[];
+  adjustments: StockAdjustment[];
+  counts: StockCount[];
+  transfers: StockTransfer[];
+  purchaseOrders: PurchaseOrderDraft[];
+
+  itemById: Record<string, InventoryItem>;
+  batchById: Record<string, StockBatch>;
+  warehouseById: Record<string, Warehouse>;
+  supplierById: Record<string, Supplier>;
+
+  warehouseFilter: WarehouseFilter;
+  setWarehouseFilter: (w: WarehouseFilter) => void;
+  /** Batches in the selected warehouse (or all). */
+  scopedBatches: StockBatch[];
+  /** Stock summary per item for the selected warehouse. */
+  stockByItem: Record<string, ItemStock>;
+
+  adjustStock: (input: { batchId: string; reason: AdjustmentReason; note: string; delta: number }) => StockAdjustment | null;
+  approveAdjustment: (id: string) => void;
+  rejectAdjustment: (id: string) => void;
+  setBatchHold: (batchId: string, hold: BatchHold, reason?: string) => void;
+  returnToSupplier: (batchId: string, quantity: number, note: string) => void;
+
+  createCount: (title: string, warehouseId: string, category: string) => string;
+  setCountedQuantity: (countId: string, batchId: string, value: number | null) => void;
+  completeCount: (countId: string) => { posted: number; pending: number };
+
+  createTransfer: (input: { fromWarehouseId: string; toWarehouseId: string; lines: StockTransferLine[]; note?: string }) => string;
+  dispatchTransfer: (id: string) => void;
+  receiveTransfer: (id: string) => void;
+  cancelTransfer: (id: string) => void;
+
+  createPurchaseOrders: (lines: { itemId: string; packs: number }[]) => string[];
+  markPurchaseOrderSent: (id: string) => void;
+
+  notify: (message: string, tone?: Toast["tone"]) => void;
+}
+
+const InventoryContext = createContext<InventoryContextValue | null>(null);
+
+export function useInventory(): InventoryContextValue {
+  const ctx = useContext(InventoryContext);
+  if (!ctx) throw new Error("useInventory must be used inside <InventoryProvider>");
+  return ctx;
+}
+
+const byId = <T extends { id: string }>(list: T[]) =>
+  list.reduce<Record<string, T>>((acc, x) => {
+    acc[x.id] = x;
+    return acc;
+  }, {});
+
+const nowIso = () => new Date().toISOString();
+
+export function InventoryProvider({ children }: { children: React.ReactNode }) {
+  const [batches, setBatches] = useState<StockBatch[]>(stockBatches);
+  const [movements, setMovements] = useState<StockMovement[]>(stockMovements);
+  const [adjustments, setAdjustments] = useState<StockAdjustment[]>(stockAdjustments);
+  const [counts, setCounts] = useState<StockCount[]>(stockCounts);
+  const [transfers, setTransfers] = useState<StockTransfer[]>(stockTransfers);
+  const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrderDraft[]>(purchaseOrderDrafts);
+  const [warehouseFilter, setWarehouseFilter] = useState<WarehouseFilter>("ALL");
+  const [toasts, setToasts] = useState<Toast[]>([]);
+
+  const seq = useRef(100);
+  const next = (prefix: string) => `${prefix}${String(++seq.current).padStart(3, "0")}`;
+
+  const itemById = useMemo(() => byId(inventoryItems), []);
+  const warehouseById = useMemo(() => byId(warehouses), []);
+  const supplierById = useMemo(() => byId(inventorySuppliers), []);
+  const batchById = useMemo(() => byId(batches), [batches]);
+
+  const scopedBatches = useMemo(
+    () => (warehouseFilter === "ALL" ? batches : batches.filter((b) => b.warehouseId === warehouseFilter)),
+    [batches, warehouseFilter]
+  );
+
+  const stockByItem = useMemo(() => {
+    const map: Record<string, ItemStock> = {};
+    for (const item of inventoryItems) map[item.id] = computeItemStock(item, scopedBatches);
+    return map;
+  }, [scopedBatches]);
+
+  /* ---------- toasts ---------- */
+
+  const notify = useCallback((message: string, tone: Toast["tone"] = "success") => {
+    const id = Date.now() + Math.random();
+    setToasts((t) => [...t.slice(-2), { id, message, tone }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4000);
+  }, []);
+
+  /* ---------- low-level helpers ---------- */
+
+  const changeBatchQty = (batchId: string, delta: number) =>
+    setBatches((prev) =>
+      prev.map((b) => (b.id === batchId ? { ...b, availableQuantity: Math.max(0, b.availableQuantity + delta) } : b))
+    );
+
+  const logMovement = (m: Omit<StockMovement, "id" | "date" | "performedBy"> & { performedBy?: string }) => {
+    const entry: StockMovement = { id: next("mv-"), date: nowIso(), performedBy: CURRENT_USER, ...m };
+    setMovements((prev) => [entry, ...prev]);
+  };
+
+  const applyAdjustment = (adj: Pick<StockAdjustment, "id" | "batchId" | "itemId" | "warehouseId" | "reason" | "note" | "quantityDelta">, unitCost: number) => {
+    changeBatchQty(adj.batchId, adj.quantityDelta);
+    logMovement({
+      itemId: adj.itemId,
+      batchId: adj.batchId,
+      warehouseId: adj.warehouseId,
+      type: movementTypeForReason(adj.reason, adj.quantityDelta),
+      quantity: adj.quantityDelta,
+      unitCost,
+      reference: adj.id,
+      note: adj.note,
+    });
+  };
+
+  /* ---------- adjustments ---------- */
+
+  const adjustStock: InventoryContextValue["adjustStock"] = ({ batchId, reason, note, delta }) => {
+    const batch = batches.find((b) => b.id === batchId);
+    if (!batch || delta === 0) return null;
+    const newQuantity = Math.max(0, batch.availableQuantity + delta);
+    const quantityDelta = newQuantity - batch.availableQuantity;
+    if (quantityDelta === 0) return null;
+    const costImpact = Math.round(quantityDelta * batch.unitCost * 100) / 100;
+    const needsApproval = costImpact < 0 && Math.abs(costImpact) >= APPROVAL_THRESHOLD;
+
+    const adj: StockAdjustment = {
+      id: next("ADJ-2611-"),
+      date: nowIso(),
+      itemId: batch.itemId,
+      batchId,
+      warehouseId: batch.warehouseId,
+      reason,
+      note,
+      quantityDelta,
+      previousQuantity: batch.availableQuantity,
+      newQuantity,
+      costImpact,
+      requestedBy: CURRENT_USER,
+      status: needsApproval ? "PENDING" : "APPROVED",
+      ...(needsApproval ? {} : { reviewedBy: CURRENT_USER, reviewedAt: nowIso() }),
+    };
+    setAdjustments((prev) => [adj, ...prev]);
+    if (!needsApproval) applyAdjustment(adj, batch.unitCost);
+    return adj;
+  };
+
+  const approveAdjustment = (id: string) => {
+    const adj = adjustments.find((a) => a.id === id);
+    if (!adj || adj.status !== "PENDING") return;
+    const batch = batches.find((b) => b.id === adj.batchId);
+    setAdjustments((prev) =>
+      prev.map((a) => (a.id === id ? { ...a, status: "APPROVED", reviewedBy: STAFF.superAdmin, reviewedAt: nowIso() } : a))
+    );
+    applyAdjustment(adj, batch?.unitCost ?? 0);
+    notify(`${adj.id} approved and stock updated.`);
+  };
+
+  const rejectAdjustment = (id: string) => {
+    setAdjustments((prev) =>
+      prev.map((a) => (a.id === id ? { ...a, status: "REJECTED", reviewedBy: STAFF.superAdmin, reviewedAt: nowIso() } : a))
+    );
+    notify(`${id} rejected. Stock was not changed.`, "warning");
+  };
+
+  /* ---------- batch actions ---------- */
+
+  const setBatchHold: InventoryContextValue["setBatchHold"] = (batchId, hold, reason) =>
+    setBatches((prev) =>
+      prev.map((b) => (b.id === batchId ? { ...b, hold, holdReason: hold === "NONE" ? undefined : reason } : b))
+    );
+
+  const returnToSupplier: InventoryContextValue["returnToSupplier"] = (batchId, quantity, note) => {
+    const batch = batches.find((b) => b.id === batchId);
+    if (!batch) return;
+    const qty = Math.min(quantity, batch.availableQuantity);
+    changeBatchQty(batchId, -qty);
+    logMovement({
+      itemId: batch.itemId,
+      batchId,
+      warehouseId: batch.warehouseId,
+      type: "SUPPLIER_RETURN",
+      quantity: -qty,
+      unitCost: batch.unitCost,
+      reference: next("SRN-2611-"),
+      note,
+    });
+  };
+
+  /* ---------- stock counts ---------- */
+
+  const createCount: InventoryContextValue["createCount"] = (title, warehouseId, category) => {
+    const id = next("CNT-2611-");
+    const lines = batches
+      .filter(
+        (b) =>
+          b.warehouseId === warehouseId &&
+          b.availableQuantity > 0 &&
+          (category === "ALL" || itemById[b.itemId]?.category === category)
+      )
+      .map((b) => ({ batchId: b.id, systemQuantity: b.availableQuantity, countedQuantity: null }));
+    setCounts((prev) => [
+      { id, title, warehouseId, createdAt: nowIso(), createdBy: CURRENT_USER, status: "IN_PROGRESS", lines },
+      ...prev,
+    ]);
+    return id;
+  };
+
+  const setCountedQuantity: InventoryContextValue["setCountedQuantity"] = (countId, batchId, value) =>
+    setCounts((prev) =>
+      prev.map((c) =>
+        c.id === countId
+          ? { ...c, lines: c.lines.map((l) => (l.batchId === batchId ? { ...l, countedQuantity: value } : l)) }
+          : c
+      )
+    );
+
+  const completeCount: InventoryContextValue["completeCount"] = (countId) => {
+    const count = counts.find((c) => c.id === countId);
+    if (!count) return { posted: 0, pending: 0 };
+    let posted = 0;
+    let pending = 0;
+    for (const line of count.lines) {
+      if (line.countedQuantity === null || line.countedQuantity === line.systemQuantity) continue;
+      const adj = adjustStock({
+        batchId: line.batchId,
+        reason: "COUNT_DISCREPANCY",
+        note: `Stock count ${count.id}: counted ${line.countedQuantity}, system ${line.systemQuantity}`,
+        delta: line.countedQuantity - line.systemQuantity,
+      });
+      if (adj?.status === "PENDING") pending++;
+      else if (adj) posted++;
+    }
+    setCounts((prev) => prev.map((c) => (c.id === countId ? { ...c, status: "COMPLETED", completedAt: nowIso() } : c)));
+    return { posted, pending };
+  };
+
+  /* ---------- transfers ---------- */
+
+  const createTransfer: InventoryContextValue["createTransfer"] = ({ fromWarehouseId, toWarehouseId, lines, note }) => {
+    const id = next("TRF-2611-");
+    setTransfers((prev) => [
+      { id, fromWarehouseId, toWarehouseId, status: "REQUESTED", requestedAt: nowIso(), requestedBy: CURRENT_USER, note, lines },
+      ...prev,
+    ]);
+    return id;
+  };
+
+  const dispatchTransfer = (id: string) => {
+    const t = transfers.find((x) => x.id === id);
+    if (!t || t.status !== "REQUESTED") return;
+    const short = t.lines.find((l) => (batchById[l.batchId]?.availableQuantity ?? 0) < l.quantity);
+    if (short) {
+      notify(`Not enough stock in batch ${batchById[short.batchId]?.batchNumber} to dispatch ${t.id}.`, "warning");
+      return;
+    }
+    for (const l of t.lines) {
+      const b = batchById[l.batchId];
+      changeBatchQty(l.batchId, -l.quantity);
+      logMovement({
+        itemId: b.itemId,
+        batchId: b.id,
+        warehouseId: t.fromWarehouseId,
+        type: "TRANSFER_OUT",
+        quantity: -l.quantity,
+        unitCost: b.unitCost,
+        reference: t.id,
+      });
+    }
+    setTransfers((prev) => prev.map((x) => (x.id === id ? { ...x, status: "IN_TRANSIT", dispatchedAt: nowIso() } : x)));
+    notify(`${t.id} dispatched. Stock removed from ${warehouseById[t.fromWarehouseId].name}.`);
+  };
+
+  const receiveTransfer = (id: string) => {
+    const t = transfers.find((x) => x.id === id);
+    if (!t || t.status !== "IN_TRANSIT") return;
+
+    const created: StockBatch[] = [];
+    const increments: Record<string, number> = {};
+    const moves: Omit<StockMovement, "id" | "date" | "performedBy">[] = [];
+
+    for (const l of t.lines) {
+      const src = batchById[l.batchId];
+      if (!src) continue;
+      const existing =
+        batches.find((b) => b.itemId === src.itemId && b.batchNumber === src.batchNumber && b.warehouseId === t.toWarehouseId) ??
+        created.find((b) => b.itemId === src.itemId && b.batchNumber === src.batchNumber);
+      let destId: string;
+      if (existing && !created.includes(existing)) {
+        increments[existing.id] = (increments[existing.id] ?? 0) + l.quantity;
+        destId = existing.id;
+      } else if (existing) {
+        existing.availableQuantity += l.quantity;
+        existing.initialQuantity += l.quantity;
+        destId = existing.id;
+      } else {
+        destId = next("bt-");
+        created.push({
+          ...src,
+          id: destId,
+          warehouseId: t.toWarehouseId,
+          location: "Receiving bay",
+          receivedDate: nowIso().slice(0, 10),
+          initialQuantity: l.quantity,
+          availableQuantity: l.quantity,
+          purchaseRef: t.id,
+        });
+      }
+      moves.push({
+        itemId: src.itemId,
+        batchId: destId,
+        warehouseId: t.toWarehouseId,
+        type: "TRANSFER_IN" as StockMovementType,
+        quantity: l.quantity,
+        unitCost: src.unitCost,
+        reference: t.id,
+      });
+    }
+
+    setBatches((prev) => [
+      ...prev.map((b) => (increments[b.id] ? { ...b, availableQuantity: b.availableQuantity + increments[b.id] } : b)),
+      ...created,
+    ]);
+    moves.forEach((mv) => logMovement(mv));
+    setTransfers((prev) => prev.map((x) => (x.id === id ? { ...x, status: "RECEIVED", receivedAt: nowIso() } : x)));
+    notify(`${t.id} received at ${warehouseById[t.toWarehouseId].name}.`);
+  };
+
+  const cancelTransfer = (id: string) => {
+    setTransfers((prev) => prev.map((x) => (x.id === id && x.status === "REQUESTED" ? { ...x, status: "CANCELLED" } : x)));
+    notify(`${id} cancelled.`, "warning");
+  };
+
+  /* ---------- purchase orders ---------- */
+
+  const createPurchaseOrders: InventoryContextValue["createPurchaseOrders"] = (lines) => {
+    const bySupplier: Record<string, PurchaseOrderDraft["lines"]> = {};
+    for (const l of lines) {
+      const item = itemById[l.itemId];
+      if (!item || l.packs <= 0) continue;
+      (bySupplier[item.supplierId] ||= []).push({
+        itemId: item.id,
+        packs: l.packs,
+        unitCost: item.costPrice * item.unitsPerPack,
+      });
+    }
+    const drafts: PurchaseOrderDraft[] = Object.entries(bySupplier).map(([supplierId, poLines]) => ({
+      id: next("PO-2611-"),
+      supplierId,
+      createdAt: nowIso(),
+      lines: poLines,
+      status: "DRAFT",
+    }));
+    setPurchaseOrders((prev) => [...drafts, ...prev]);
+    return drafts.map((d) => d.id);
+  };
+
+  const markPurchaseOrderSent = (id: string) =>
+    setPurchaseOrders((prev) => prev.map((p) => (p.id === id ? { ...p, status: "SENT" } : p)));
+
+  const value: InventoryContextValue = {
+    items: inventoryItems,
+    warehouses,
+    suppliers: inventorySuppliers,
+    batches,
+    movements,
+    adjustments,
+    counts,
+    transfers,
+    purchaseOrders,
+    itemById,
+    batchById,
+    warehouseById,
+    supplierById,
+    warehouseFilter,
+    setWarehouseFilter,
+    scopedBatches,
+    stockByItem,
+    adjustStock,
+    approveAdjustment,
+    rejectAdjustment,
+    setBatchHold,
+    returnToSupplier,
+    createCount,
+    setCountedQuantity,
+    completeCount,
+    createTransfer,
+    dispatchTransfer,
+    receiveTransfer,
+    cancelTransfer,
+    createPurchaseOrders,
+    markPurchaseOrderSent,
+    notify,
+  };
+
+  return (
+    <InventoryContext.Provider value={value}>
+      {children}
+      <ToastStack toasts={toasts} onDismiss={(id) => setToasts((t) => t.filter((x) => x.id !== id))} />
+    </InventoryContext.Provider>
+  );
+}
+
+function ToastStack({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
+  if (toasts.length === 0) return null;
+  return (
+    <div className="pointer-events-none fixed inset-x-4 bottom-4 z-[60] flex flex-col items-center gap-2 sm:inset-x-auto sm:right-6 sm:items-end">
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          role="status"
+          aria-live="polite"
+          className="pointer-events-auto flex w-full max-w-md items-start gap-3 rounded-xl bg-slate-900 px-4 py-3 text-sm text-white shadow-lg"
+        >
+          {t.tone === "success" ? (
+            <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-400" aria-hidden />
+          ) : (
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-400" aria-hidden />
+          )}
+          <p className="flex-1">{t.message}</p>
+          <button onClick={() => onDismiss(t.id)} aria-label="Dismiss" className="text-slate-400 hover:text-white">
+            <X className="size-4" />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}

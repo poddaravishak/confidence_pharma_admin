@@ -52,3 +52,23 @@ body {
     border: 1px solid #B8E8C3;
   }
 }
+
+/* Print only the delivery challan when it is open */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .print-area,
+  .print-area * {
+    visibility: visible;
+  }
+  .print-area {
+    position: absolute;
+    inset: 0;
+    max-height: none !important;
+    box-shadow: none !important;
+  }
+  .print-area .no-print {
+    display: none !important;
+  }
+}

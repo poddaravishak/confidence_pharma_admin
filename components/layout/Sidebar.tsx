@@ -16,7 +16,7 @@ import {
   MessageSquare,
   ShieldCheck,
   FileText,
-  AlertCircle
+  Boxes
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -46,7 +46,7 @@ const navGroups: NavGroup[] = [
     label: "Inventory & Purchasing",
     items: [
       { label: "Purchase Entry (OCR)", href: "/purchases", icon: FileText },
-      { label: "Stock & FEFO Batches", href: "/inventory", icon: AlertCircle, badge: "Alert", badgeColor: "bg-rose-500" },
+      { label: "Inventory & FEFO Batches", href: "/inventory", icon: Boxes, badge: "Alert", badgeColor: "bg-rose-500" },
       { label: "Suppliers & Payables", href: "/suppliers", icon: Building2 },
     ],
   },
@@ -67,8 +67,18 @@ const navGroups: NavGroup[] = [
   },
 ];
 
+const allHrefs = navGroups.flatMap((g) => g.items.map((i) => i.href));
+
+/** The most specific nav link that matches the current path (so /inventory/batches highlights Inventory). */
+function activeHref(pathname: string): string | undefined {
+  return allHrefs
+    .filter((href) => pathname === href || (href !== "/" && pathname.startsWith(`${href}/`)))
+    .sort((a, b) => b.length - a.length)[0];
+}
+
 export const Sidebar: React.FC = () => {
   const pathname = usePathname();
+  const current = activeHref(pathname);
 
   return (
     <aside className="sticky top-0 flex h-dvh w-64 flex-col border-r border-slate-200/80 bg-white">
@@ -93,7 +103,7 @@ export const Sidebar: React.FC = () => {
             </p>
             <div className="space-y-1">
               {group.items.map((item) => {
-                const isActive = pathname === item.href;
+                const isActive = current === item.href;
                 const Icon = item.icon;
 
                 return (
