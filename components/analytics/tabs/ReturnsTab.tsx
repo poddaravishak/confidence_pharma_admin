@@ -16,6 +16,8 @@ import { SERIES } from "../theme";
 import { num, pct, rangeLabel, taka, takaCompact } from "../format";
 import { useNameLookup } from "../useAnalytics";
 import { GranularityPills, MiniStatGrid, TabProps, fileStamp, useGranularity } from "./shared";
+import { packUnitOf } from "@/components/orders/shared";
+import { qtyText } from "@/lib/units";
 
 export function ReturnsTab({ history, range, cmp, canExport, compareLabel }: TabProps) {
   const { returns } = useAppStore();
@@ -117,7 +119,7 @@ export function ReturnsTab({ history, range, cmp, canExport, compareLabel }: Tab
                   </span>
                   <span className="mt-0.5 block truncate text-sm text-apptext-primary">{r.customerName}</span>
                   <span className="block text-xs text-apptext-secondary">
-                    {formatDateTime(r.createdAt)} · {r.lines.map((l) => `${l.quantity} × ${l.productName}`).join(", ")}
+                    {formatDateTime(r.createdAt)} · {r.lines.map((l) => `${qtyText(l.quantity, packUnitOf(l))} ${l.productName}`).join(", ")}
                   </span>
                 </span>
                 <span className="text-sm font-semibold tabular-nums text-apptext-primary">{taka(r.totalValue)}</span>

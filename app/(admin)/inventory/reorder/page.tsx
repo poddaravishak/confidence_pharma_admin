@@ -5,11 +5,25 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { CheckCircle2, FileText, PackageCheck, Phone, Send, ShoppingBag } from "lucide-react";
 import { InventoryItem } from "@/lib/types";
-import { formatBase, formatDateTime, plural, suggestedReorderPacks } from "@/lib/inventory";
+import { formatBase, formatDateTime, formatPacks, plural, suggestedReorderPacks } from "@/lib/inventory";
+import { defaultPurchaseLevel, qtyText } from "@/lib/units";
 import { cn, formatCurrency } from "@/lib/utils";
-import { Badge, Card, CardHeader, EmptyState, btn, inputClass } from "@/components/ui";
+import { Badge, Card, CardHeader, EmptyState, btn } from "@/components/ui";
 import { useInventory } from "@/components/inventory/InventoryProvider";
 import { StockStatusBadge } from "@/components/inventory/shared";
+import { UnitQty, UnitQuantityInput, unitQtyToBase } from "@/components/units";
+
+/**
+ * Purchase orders are placed in the item's default purchase unit (Box,
+ * Carton…). The order quantity can be typed in any unit; it is converted to
+ * base units and rounded up to whole purchase units.
+ */
+function purchasePlan(item: InventoryItem, v: UnitQty | undefined) {
+  const level = defaultPurchaseLevel(item);
+  const base = v ? unitQtyToBase(item, v) : 0;
+  const packs = Math.ceil(base / level.factor);
+  return { level, base, packs, orderedBase: packs * level.factor, cost: packs * level.cost };
+}
 
 export default function ReorderPage() {
   return (
@@ -32,9 +46,12 @@ function ReorderView() {
     [items, stockByItem, showAll, focusItem]
   );
 
-  const [packs, setPacks] = useState<Record<string, number>>(() =>
-    Object.fromEntries(items.map((i) => [i.id, suggestedReorderPacks(i, stockByItem[i.id].sellable)]))
+  const [orderQty, setOrderQty] = useState<Record<string, UnitQty>>(() =>
+    Object.fromEntries(
+      items.map((i) => [i.id, { qty: suggestedReorderPacks(i, stockByItem[i.id].sellable), levelId: defaultPurchaseLevel(i).id }])
+    )
   );
+  const plan = (i: InventoryItem) => purchasePlan(i, orderQty[i.id]);
   const [selected, setSelected] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(items.map((i) => [i.id, stockByItem[i.id].status !== "IN_STOCK" || i.id === focusItem]))
   );
@@ -52,13 +69,12 @@ function ReorderView() {
     return map;
   }, [purchaseOrders]);
 
-  const packCost = (i: InventoryItem) => i.costPrice * i.unitsPerPack;
-  const chosen = candidates.filter((i) => selected[i.id] && (packs[i.id] ?? 0) > 0);
-  const total = chosen.reduce((s, i) => s + packCost(i) * (packs[i.id] ?? 0), 0);
+  const chosen = candidates.filter((i) => selected[i.id] && plan(i).packs > 0);
+  const total = chosen.reduce((s, i) => s + plan(i).cost, 0);
   const supplierCount = new Set(chosen.map((i) => i.supplierId)).size;
 
   const create = () => {
-    const ids = createPurchaseOrders(chosen.map((i) => ({ itemId: i.id, packs: packs[i.id] })));
+    const ids = createPurchaseOrders(chosen.map((i) => ({ itemId: i.id, packs: plan(i).packs })));
     notify(`${ids.length} draft purchase ${ids.length === 1 ? "order" : "orders"} created: ${ids.join(", ")}.`);
     setSelected((s) => ({ ...s, ...Object.fromEntries(chosen.map((i) => [i.id, false])) }));
   };
@@ -88,7 +104,7 @@ function ReorderView() {
           <div className="divide-y divide-slate-200">
             {groups.map(([supplierId, list]) => {
               const sup = supplierById[supplierId];
-              const subtotal = list.filter((i) => selected[i.id]).reduce((s, i) => s + packCost(i) * (packs[i.id] ?? 0), 0);
+              const subtotal = list.filter((i) => selected[i.id]).reduce((s, i) => s + plan(i).cost, 0);
               return (
                 <section key={supplierId}>
                   <div className="flex flex-wrap items-center justify-between gap-2 bg-surface px-4 py-2.5 sm:px-5">
@@ -104,7 +120,7 @@ function ReorderView() {
                     </p>
                   </div>
                   <div className="overflow-x-auto">
-                    <table className="w-full min-w-[820px] text-left text-sm">
+                    <table className="w-full min-w-[900px] text-left text-sm">
                       <thead className="text-xs text-apptext-secondary">
                         <tr className="border-b border-slate-100">
                           <th className="w-10 py-2 pl-4 sm:pl-5">
@@ -120,7 +136,7 @@ function ReorderView() {
                       <tbody className="divide-y divide-slate-100">
                         {list.map((i) => {
                           const s = stockByItem[i.id];
-                          const p = packs[i.id] ?? 0;
+                          const p = plan(i);
                           const urgent = s.daysOfCover !== null && s.daysOfCover <= i.leadTimeDays;
                           return (
                             <tr key={i.id} className={cn(!selected[i.id] && "opacity-60", i.id === focusItem && "bg-brand-light/30")}>
@@ -139,7 +155,7 @@ function ReorderView() {
                                   <StockStatusBadge status={s.status} />
                                   {onOrder[i.id] ? (
                                     <Badge className="border-blue-200 bg-blue-50 text-brand-primary">
-                                      On order: {onOrder[i.id].packs} {plural(i.packUnit, onOrder[i.id].packs)} ({onOrder[i.id].po})
+                                      On order: {qtyText(onOrder[i.id].packs, p.level.name)} ({onOrder[i.id].po})
                                     </Badge>
                                   ) : (
                                     urgent && <Badge className="border-rose-200 bg-rose-50 text-rose-700">Order today</Badge>
@@ -148,7 +164,8 @@ function ReorderView() {
                               </td>
                               <td className="px-3 py-3 tabular-nums">
                                 <p className="font-medium text-apptext-primary">{formatBase(s.sellable, i)}</p>
-                                <p className="text-xs text-apptext-secondary">Reorder at {i.reorderLevel.toLocaleString("en-US")}</p>
+                                <p className="text-xs text-slate-400">{formatPacks(s.sellable, i)}</p>
+                                <p className="text-xs text-apptext-secondary">Reorder at {formatBase(i.reorderLevel, i)}</p>
                               </td>
                               <td className="px-3 py-3 text-right tabular-nums">
                                 <p className={cn("font-medium", urgent ? "text-rose-700" : "text-apptext-primary")}>
@@ -157,23 +174,23 @@ function ReorderView() {
                                 <p className="text-xs text-apptext-secondary">Lead time {i.leadTimeDays} days</p>
                               </td>
                               <td className="px-3 py-3 text-right">
-                                <div className="flex items-center justify-end gap-2">
-                                  <input
-                                    type="number"
-                                    min={0}
-                                    aria-label={`Order quantity for ${i.name}`}
-                                    value={p}
-                                    onChange={(e) => setPacks((x) => ({ ...x, [i.id]: Math.max(0, Math.floor(Number(e.target.value) || 0)) }))}
-                                    className={cn(inputClass, "w-24 text-right tabular-nums")}
-                                  />
-                                  <span className="w-16 text-left text-xs text-apptext-secondary">{plural(i.packUnit, p)}</span>
-                                </div>
-                                <p className="mt-0.5 text-xs text-slate-400">= {formatBase(p * i.unitsPerPack, i)}</p>
+                                <UnitQuantityInput
+                                  item={i}
+                                  value={orderQty[i.id] ?? { qty: 0, levelId: p.level.id }}
+                                  onChange={(v) => setOrderQty((x) => ({ ...x, [i.id]: v }))}
+                                  className="ml-auto w-52 text-left"
+                                />
+                                {p.orderedBase !== p.base && (
+                                  <p className="ml-auto mt-0.5 w-52 text-left text-xs text-amber-700">
+                                    Ordered in whole {plural(p.level.name, 2).toLowerCase()}: {qtyText(p.packs, p.level.name)} (
+                                    {formatBase(p.orderedBase, i)})
+                                  </p>
+                                )}
                               </td>
                               <td className="px-4 py-3 text-right font-medium tabular-nums text-apptext-primary sm:pr-5">
-                                {formatCurrency(packCost(i) * p)}
+                                {formatCurrency(p.cost)}
                                 <p className="text-xs font-normal text-slate-500">
-                                  {formatCurrency(packCost(i))} / {i.packUnit.toLowerCase()}
+                                  {qtyText(p.packs, p.level.name)} × {formatCurrency(p.level.cost)}
                                 </p>
                               </td>
                             </tr>
@@ -221,7 +238,8 @@ function ReorderView() {
           <ul className="divide-y divide-slate-100">
             {purchaseOrders.map((po) => {
               const sup = supplierById[po.supplierId];
-              const value = po.lines.reduce((s, l) => s + l.packs * l.unitCost, 0);
+              // PO lines are counted in each item's default purchase unit.
+              const value = po.lines.reduce((s, l) => s + l.packs * defaultPurchaseLevel(itemById[l.itemId]).cost, 0);
               return (
                 <li key={po.id} className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
                   <div>
@@ -238,7 +256,13 @@ function ReorderView() {
                     </div>
                     <p className="text-sm text-apptext-primary">{sup?.name}</p>
                     <p className="text-xs text-apptext-secondary">
-                      {po.lines.map((l) => `${itemById[l.itemId].name} × ${l.packs}`).join(" · ")}
+                      {po.lines
+                        .map((l) => {
+                          const item = itemById[l.itemId];
+                          const level = defaultPurchaseLevel(item);
+                          return `${item.name} × ${qtyText(l.packs, level.name)} (${formatBase(l.packs * level.factor, item)})`;
+                        })
+                        .join(" · ")}
                     </p>
                     <p className="text-xs text-slate-400">{formatDateTime(po.createdAt)}</p>
                   </div>

@@ -1,30 +1,34 @@
 "use client";
 
 import React, { useState } from "react";
-import { mockSuppliers, mockProducts } from "@/lib/db/mock-data";
-import { formatCurrency } from "@/lib/utils";
-import { 
-  FileText, 
-  Camera, 
-  Sparkles, 
-  Check, 
-  AlertCircle, 
-  Plus, 
-  Trash2,
-  CheckCircle2,
-  X
-} from "lucide-react";
+import { mockSuppliers } from "@/lib/db/mock-data";
+import { InventoryItem } from "@/lib/types";
+import { cn, formatCurrency } from "@/lib/utils";
+import { formatBase } from "@/lib/inventory";
+import { conversionChain, defaultPurchaseLevel, findLevel, unitLevels } from "@/lib/units";
+import { inputClass } from "@/components/ui";
+import { useInventory } from "@/components/inventory/InventoryProvider";
+import { UnitQty, UnitQuantityInput, unitQtyToBase } from "@/components/units";
+import { Camera, CheckCircle2, Plus, Sparkles, Trash2, X } from "lucide-react";
 
+/**
+ * A purchase invoice line. Quantity is entered in the item's default purchase
+ * unit (Box, Carton…) or any other unit, and received into stock in base units.
+ */
 interface PurchaseRow {
   id: string;
-  productName: string;
-  packSize: string;
+  itemId: string;
   batchNo: string;
   expiryDate: string;
-  quantity: number;
-  rate: number;
+  qty: UnitQty;
   isOcr?: boolean;
 }
+
+/** A line in the item's default purchase unit. */
+const purchaseQty = (item: InventoryItem | undefined, qty: number): UnitQty => ({
+  qty,
+  levelId: item ? defaultPurchaseLevel(item).id : "base",
+});
 
 export default function PurchasesPage() {
   const [ocrScanning, setOcrScanning] = useState(false);
@@ -35,18 +39,29 @@ export default function PurchasesPage() {
   const [invoiceNo, setInvoiceNo] = useState("INV-2026-0041");
   const [purchaseDate, setPurchaseDate] = useState("2026-11-03");
 
-  const [items, setItems] = useState<PurchaseRow[]>([
+  const { items: catalog, itemById } = useInventory();
+
+  const [items, setItems] = useState<PurchaseRow[]>(() => [
     {
       id: "1",
-      productName: "Napa Extra 500+65mg",
-      packSize: "1 Box (20 Strips)",
+      itemId: "prod-01",
       batchNo: "BEX-NX-2601",
       expiryDate: "2028-05-30",
-      quantity: 50,
-      rate: 528.0,
+      qty: purchaseQty(itemById["prod-01"], 50),
       isOcr: false,
     },
   ]);
+
+  const setRow = (id: string, patch: Partial<PurchaseRow>) =>
+    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
+
+  /** Chosen unit, its cost, base units received and line total for a row. */
+  const lineOf = (row: PurchaseRow) => {
+    const item = itemById[row.itemId];
+    if (!item) return null;
+    const level = findLevel(item, { id: row.qty.levelId }) ?? unitLevels(item)[0];
+    return { item, level, base: unitQtyToBase(item, row.qty), total: (row.qty.qty || 0) * level.cost };
+  };
 
   const simulateOCR = () => {
     setOcrScanning(true);
@@ -59,12 +74,10 @@ export default function PurchasesPage() {
         ...prev,
         {
           id: `ocr-${Date.now()}`,
-          productName: "Monas 10mg Tablet",
-          packSize: "1 Box (3 Strips)",
-          batchNo: "INP-MN-9921",
+          itemId: "prod-15",
+          batchNo: "ACM-ORS-9921",
           expiryDate: "2027-11-15",
-          quantity: 30,
-          rate: 380.0,
+          qty: purchaseQty(itemById["prod-15"], 3),
           isOcr: true,
         },
       ]);
@@ -76,12 +89,10 @@ export default function PurchasesPage() {
       ...prev,
       {
         id: `manual-${Date.now()}`,
-        productName: "Seclo 20mg Capsule",
-        packSize: "1 Box (10 Strips)",
+        itemId: "prod-16",
         batchNo: `SQ-B-${Math.floor(1000 + Math.random() * 9000)}`,
         expiryDate: "2027-08-30",
-        quantity: 20,
-        rate: 420.0,
+        qty: purchaseQty(itemById["prod-16"], 1),
         isOcr: false,
       },
     ]);
@@ -93,16 +104,17 @@ export default function PurchasesPage() {
     }
   };
 
-  const grandTotal = items.reduce((sum, it) => sum + it.quantity * it.rate, 0);
+  const lines = items.map(lineOf);
+  const grandTotal = lines.reduce((sum, l) => sum + (l?.total ?? 0), 0);
 
   const handleSavePurchase = () => {
+    // Stock is always received in base units.
+    const received = lines
+      .filter((l): l is NonNullable<typeof l> => !!l && l.base > 0)
+      .map((l) => `${l.item.name} +${formatBase(l.base, l.item)}`)
+      .join(", ");
     setSuccessBanner(
-      `Purchase invoice ${invoiceNo} for ${formatCurrency(
-        grandTotal
-      )} saved! Warehouse stock automatically incremented by ${items.reduce(
-        (sum, it) => sum + it.quantity,
-        0
-      )} boxes.`
+      `Purchase invoice ${invoiceNo} for ${formatCurrency(grandTotal)} saved! Warehouse stock incremented: ${received || "nothing"}.`
     );
     setTimeout(() => setSuccessBanner(null), 6000);
   };
@@ -169,7 +181,7 @@ export default function PurchasesPage() {
       )}
 
       {/* Purchase Entry Form */}
-      <div className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-xs space-y-6">
+      <div className="min-w-0 rounded-2xl border border-slate-200/80 bg-white p-4 shadow-xs space-y-6 sm:p-6">
         <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">
           New Purchase Invoice Header
         </h2>
@@ -227,8 +239,8 @@ export default function PurchasesPage() {
             </button>
           </div>
 
-          <div className="rounded-xl border border-slate-200 overflow-hidden">
-            <table className="w-full text-left text-xs">
+          <div className="overflow-x-auto rounded-xl border border-slate-200">
+            <table className="w-full min-w-[960px] text-left text-xs">
               <thead className="bg-surface border-b border-slate-200 text-apptext-secondary font-semibold uppercase text-[11px]">
                 <tr>
                   <th className="p-3">Medicine Description</th>
@@ -241,33 +253,80 @@ export default function PurchasesPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {items.map((it) => (
-                  <tr key={it.id} className={it.isOcr ? "bg-brand-light/20" : ""}>
-                    <td className="p-3 font-bold text-apptext-primary">
-                      {it.productName}
-                      <span className="block text-[11px] text-apptext-secondary font-normal">
-                        {it.packSize} {it.isOcr && "• ★ OCR Extracted"}
-                      </span>
-                    </td>
-                    <td className="p-3 font-mono font-bold text-brand-primary">{it.batchNo}</td>
-                    <td className="p-3 font-semibold text-slate-700">{it.expiryDate}</td>
-                    <td className="p-3 font-bold font-mono tabular-nums">{it.quantity} Boxes</td>
-                    <td className="p-3 font-mono tabular-nums">৳{it.rate}</td>
-                    <td className="p-3 text-right font-black text-brand-primary font-mono tabular-nums">
-                      {formatCurrency(it.quantity * it.rate)}
-                    </td>
-                    <td className="p-3 text-center">
-                      <button
-                        onClick={() => handleRemoveItem(it.id)}
-                        disabled={items.length <= 1}
-                        className="text-slate-400 hover:text-rose-600 disabled:opacity-30 p-1"
-                        title="Remove Item"
-                      >
-                        <Trash2 className="size-3.5" />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {items.map((it, idx) => {
+                  const line = lines[idx];
+                  return (
+                    <tr key={it.id} className={cn("align-top", it.isOcr && "bg-brand-light/20")}>
+                      <td className="p-3">
+                        <select
+                          aria-label="Product"
+                          value={it.itemId}
+                          onChange={(e) => setRow(it.id, { itemId: e.target.value, qty: purchaseQty(itemById[e.target.value], 1) })}
+                          className={cn(inputClass, "w-60 font-semibold")}
+                        >
+                          {catalog.map((c) => (
+                            <option key={c.id} value={c.id}>
+                              {c.name}
+                            </option>
+                          ))}
+                        </select>
+                        <span className="mt-1 block text-[11px] text-apptext-secondary">
+                          {line ? conversionChain(line.item) : ""} {it.isOcr && "• ★ OCR Extracted"}
+                        </span>
+                      </td>
+                      <td className="p-3">
+                        <input
+                          aria-label="Batch number"
+                          value={it.batchNo}
+                          onChange={(e) => setRow(it.id, { batchNo: e.target.value })}
+                          className={cn(inputClass, "w-36 font-mono font-bold text-brand-primary")}
+                        />
+                      </td>
+                      <td className="p-3">
+                        <input
+                          type="date"
+                          aria-label="Expiry date"
+                          value={it.expiryDate}
+                          onChange={(e) => setRow(it.id, { expiryDate: e.target.value })}
+                          className={cn(inputClass, "w-36")}
+                        />
+                      </td>
+                      <td className="p-3">
+                        {line && (
+                          <UnitQuantityInput
+                            item={line.item}
+                            value={it.qty}
+                            onChange={(qty) => setRow(it.id, { qty })}
+                            className="w-52"
+                          />
+                        )}
+                      </td>
+                      <td className="p-3 font-mono tabular-nums">
+                        {line && (
+                          <>
+                            ৳{line.level.cost.toLocaleString("en-US", { maximumFractionDigits: 2 })}
+                            <span className="block font-sans text-[11px] text-apptext-secondary">
+                              per {line.level.name.toLowerCase()}
+                            </span>
+                          </>
+                        )}
+                      </td>
+                      <td className="p-3 text-right font-black text-brand-primary font-mono tabular-nums">
+                        {formatCurrency(line?.total ?? 0)}
+                      </td>
+                      <td className="p-3 text-center">
+                        <button
+                          onClick={() => handleRemoveItem(it.id)}
+                          disabled={items.length <= 1}
+                          className="text-slate-400 hover:text-rose-600 disabled:opacity-30 p-1"
+                          title="Remove Item"
+                        >
+                          <Trash2 className="size-3.5" />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -275,7 +334,7 @@ export default function PurchasesPage() {
 
         {/* Invoice Grand Total */}
         <div className="flex justify-end pt-2">
-          <div className="rounded-xl bg-surface p-4 w-72 space-y-1.5 text-xs">
+          <div className="rounded-xl bg-surface p-4 w-full sm:w-72 space-y-1.5 text-xs">
             <div className="flex justify-between text-apptext-secondary">
               <span>Items Total:</span>
               <span className="font-mono tabular-nums">{items.length} Lines</span>

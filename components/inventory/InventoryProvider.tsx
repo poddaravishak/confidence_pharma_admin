@@ -31,6 +31,8 @@ import {
   warehouses,
 } from "@/lib/db/inventory-data";
 import { ItemStock, computeItemStock, movementTypeForReason } from "@/lib/inventory";
+import { withCatalogDefaults } from "@/lib/db/catalog-data";
+import { defaultPurchaseLevel } from "@/lib/units";
 
 type Toast = { id: number; message: string; tone: "success" | "warning" };
 
@@ -91,7 +93,16 @@ interface InventoryContextValue {
   addItem: (item: InventoryItem, opening?: OpeningStockInput) => void;
   updateItem: (id: string, patch: Partial<InventoryItem>) => void;
   /** FEFO allocation from sellable batches (pure, does not change stock). */
-  allocateFefo: (itemId: string, baseQty: number, warehouseId?: string) => { batchId: string; quantity: number }[];
+  /**
+   * FEFO pick in base units. `taken` = base units already picked per batch in
+   * the same operation (several lines of one product in different units).
+   */
+  allocateFefo: (
+    itemId: string,
+    baseQty: number,
+    warehouseId?: string,
+    taken?: Record<string, number>
+  ) => { batchId: string; quantity: number }[];
   /** Take stock out of batches (dispatch). Quantities are base units. */
   issueStock: (lines: { batchId: string; quantity: number }[], reference: string, note?: string) => void;
   /** Put returned goods back. Sellable → original batch, damaged/expired → quarantine batch. */
@@ -126,7 +137,8 @@ const byId = <T extends { id: string }>(list: T[]) =>
 const nowIso = () => new Date().toISOString();
 
 export function InventoryProvider({ children }: { children: React.ReactNode }) {
-  const [items, setItems] = useState<InventoryItem[]>(inventoryItems);
+  // Every item carries its full unit ladder (base unit + pack conversions).
+  const [items, setItems] = useState<InventoryItem[]>(() => inventoryItems.map(withCatalogDefaults));
   const [batches, setBatches] = useState<StockBatch[]>(stockBatches);
   const [movements, setMovements] = useState<StockMovement[]>(stockMovements);
   const [adjustments, setAdjustments] = useState<StockAdjustment[]>(stockAdjustments);
@@ -418,10 +430,14 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
     for (const l of lines) {
       const item = itemById[l.itemId];
       if (!item || l.packs <= 0) continue;
+      // Purchase lines are in the item's purchase unit (e.g. Carton = 500 Sachets).
+      const unit = defaultPurchaseLevel(item);
       (bySupplier[item.supplierId] ||= []).push({
         itemId: item.id,
         packs: l.packs,
-        unitCost: item.costPrice * item.unitsPerPack,
+        unitCost: unit.cost,
+        unitName: unit.name,
+        unitsPerPack: unit.factor,
       });
     }
     const drafts: PurchaseOrderDraft[] = Object.entries(bySupplier).map(([supplierId, poLines]) => ({
@@ -478,16 +494,18 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
   const updateItem: InventoryContextValue["updateItem"] = (id, patch) =>
     setItems((prev) => prev.map((i) => (i.id === id ? { ...i, ...patch } : i)));
 
-  const allocateFefo: InventoryContextValue["allocateFefo"] = (itemId, baseQty, warehouseId = "wh-01") => {
+  const allocateFefo: InventoryContextValue["allocateFefo"] = (itemId, baseQty, warehouseId = "wh-01", taken = {}) => {
     const out: { batchId: string; quantity: number }[] = [];
     let left = baseQty;
+    const free = (b: StockBatch) => b.availableQuantity - (taken[b.id] ?? 0);
     const pool = batches
-      .filter((b) => b.itemId === itemId && b.warehouseId === warehouseId && b.hold === "NONE" && b.availableQuantity > 0)
+      .filter((b) => b.itemId === itemId && b.warehouseId === warehouseId && b.hold === "NONE" && free(b) > 0)
       .sort((a, b) => a.expiryDate.localeCompare(b.expiryDate));
     for (const b of pool) {
       if (left <= 0) break;
-      const take = Math.min(left, b.availableQuantity);
+      const take = Math.min(left, free(b));
       out.push({ batchId: b.id, quantity: take });
+      taken[b.id] = (taken[b.id] ?? 0) + take;
       left -= take;
     }
     return out;

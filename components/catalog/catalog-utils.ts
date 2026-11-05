@@ -1,5 +1,6 @@
 import { InventoryItem } from "@/lib/types";
 import { plural } from "@/lib/inventory";
+import { defaultSaleLevel, unitLevels } from "@/lib/units";
 
 /* ------------------------------------------------------------------ */
 /* Status                                                              */
@@ -48,8 +49,8 @@ export function marginTone(m: number | null): string {
 }
 
 /** Price of the default selling pack. */
-export const packPrice = (item: InventoryItem) => round2(item.sellingPrice * item.unitsPerPack);
-export const packMrp = (item: InventoryItem) => round2(item.mrp * item.unitsPerPack);
+export const packPrice = (item: InventoryItem) => defaultSaleLevel(item).price;
+export const packMrp = (item: InventoryItem) => defaultSaleLevel(item).mrp;
 
 /* ------------------------------------------------------------------ */
 /* Pack hierarchy                                                      */
@@ -65,33 +66,15 @@ export interface PackLevel {
   isBase: boolean;
 }
 
-/** Base unit followed by every pack level, smallest first. */
+/** Base unit followed by every pack level, smallest first (see lib/units.ts). */
 export function packHierarchy(item: InventoryItem): PackLevel[] {
-  const base: PackLevel = {
-    name: item.baseUnit,
-    multiplier: 1,
-    perParent: 1,
-    isDefault: false,
-    isBase: true,
-  };
-  let sizes = (item.packSizes ?? [])
-    .filter((p) => p.multiplierToBase > 1 || p.packNameEn !== item.baseUnit)
-    .map((p) => ({ name: p.packNameEn, multiplier: p.multiplierToBase, isDefault: p.isDefault }));
-  if (sizes.length === 0 && item.unitsPerPack > 1 && item.packUnit !== item.baseUnit) {
-    sizes = [{ name: item.packUnit, multiplier: item.unitsPerPack, isDefault: true }];
-  }
-  sizes.sort((a, b) => a.multiplier - b.multiplier);
-  if (!sizes.some((s) => s.isDefault)) {
-    const match = sizes.find((s) => s.name === item.packUnit && s.multiplier === item.unitsPerPack);
-    if (match) match.isDefault = true;
-    else base.isDefault = true;
-  }
-  const out: PackLevel[] = [base];
-  for (const s of sizes) {
-    const prev = out[out.length - 1];
-    out.push({ ...s, isBase: false, perParent: Math.max(1, Math.round(s.multiplier / prev.multiplier)) });
-  }
-  return out;
+  return unitLevels(item).map((l) => ({
+    name: l.name,
+    multiplier: l.factor,
+    perParent: l.perChild,
+    isDefault: l.isDefaultSale,
+    isBase: l.isBase,
+  }));
 }
 
 /** "1 Carton = 20 Boxes = 200 Strips = 2,000 Tablets" */

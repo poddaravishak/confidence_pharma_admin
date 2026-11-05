@@ -4,6 +4,7 @@ import { DEMO_TODAY } from "@/lib/db/inventory-data";
 import { OpeningStockInput } from "@/components/inventory/InventoryProvider";
 import { plural } from "@/lib/inventory";
 import { marginPct, markupPct, packHierarchy, round2 } from "./catalog-utils";
+import { unitLevels, validateLadder } from "@/lib/units";
 
 /* ------------------------------------------------------------------ */
 /* Draft shape (strings for numeric inputs so fields can be empty)     */
@@ -15,6 +16,8 @@ export interface PackDraft {
   /** How many of the level below make one of this */
   perParent: string;
   barcode: string;
+  /** Customers may order in this unit */
+  sellable: boolean;
 }
 
 export type TierMode = "PRICE" | "DISCOUNT";
@@ -53,9 +56,13 @@ export interface ProductDraft {
   storageCondition: string;
 
   baseUnit: string;
+  /** Customers may order loose base units */
+  baseSellable: boolean;
   packs: PackDraft[];
   /** "base" or a PackDraft key */
   defaultPackKey: string;
+  /** Default unit for purchasing / receiving: "base" or a PackDraft key */
+  purchasePackKey: string;
 
   costPrice: string;
   mrp: string;
@@ -120,11 +127,13 @@ export function emptyDraft(keep?: Partial<ProductDraft>): ProductDraft {
     isColdChain: false,
     storageCondition: "Below 30°C, dry place",
     baseUnit: "Tablet",
+    baseSellable: true,
     packs: [
-      { key: strip, name: "Strip", perParent: "10", barcode: "" },
-      { key: box, name: "Box", perParent: "10", barcode: "" },
+      { key: strip, name: "Strip", perParent: "10", barcode: "", sellable: true },
+      { key: box, name: "Box", perParent: "10", barcode: "", sellable: true },
     ],
     defaultPackKey: box,
+    purchasePackKey: box,
     costPrice: "",
     mrp: "",
     sellingPrice: "",
@@ -161,11 +170,20 @@ const str = (n: number | undefined | null) => (n === undefined || n === null || 
 /** Draft for editing (or duplicating) an existing item. */
 export function draftFromItem(item: InventoryItem, barcodes: Record<string, string>, asCopy = false): ProductDraft {
   const levels = packHierarchy(item);
+  const ladder = unitLevels(item);
   const packs: PackDraft[] = levels
     .filter((l) => !l.isBase)
-    .map((l) => ({ key: newKey(), name: l.name, perParent: String(l.perParent), barcode: asCopy ? "" : barcodes[l.name] ?? "" }));
+    .map((l, i) => ({
+      key: newKey(),
+      name: l.name,
+      perParent: String(l.perParent),
+      barcode: asCopy ? "" : barcodes[l.name] ?? ladder[i + 1]?.barcode ?? "",
+      sellable: ladder[i + 1]?.sellable ?? true,
+    }));
   const defaultIdx = levels.findIndex((l) => l.isDefault);
   const defaultPackKey = defaultIdx <= 0 ? "base" : packs[defaultIdx - 1].key;
+  const purchaseIdx = ladder.findIndex((l) => l.isDefaultPurchase);
+  const purchasePackKey = purchaseIdx <= 0 ? "base" : packs[purchaseIdx - 1]?.key ?? defaultPackKey;
   const defaultMult = Math.max(1, levels[defaultIdx]?.multiplier ?? 1);
   const packSell = item.sellingPrice * defaultMult;
 
@@ -194,8 +212,10 @@ export function draftFromItem(item: InventoryItem, barcodes: Record<string, stri
     isColdChain: item.isColdChain,
     storageCondition: item.storageCondition,
     baseUnit: item.baseUnit,
+    baseSellable: ladder[0]?.sellable ?? true,
     packs,
     defaultPackKey,
+    purchasePackKey,
     costPrice: str(item.costPrice),
     mrp: str(item.mrp),
     sellingPrice: str(item.sellingPrice),
@@ -361,6 +381,14 @@ export function validate(
       codes.add(code);
     }
   });
+  const ladderErrors = validateLadder(x.levels.map((l) => ({ name: l.name, factor: l.multiplier })));
+  if (!ladderErrors.length) {
+    const sellableKeys = [d.baseSellable ? "base" : null, ...d.packs.filter((p) => p.sellable).map((p) => p.key)];
+    if (!sellableKeys.includes(d.defaultPackKey))
+      err("defaultPack", "packs", "The default selling unit must be one customers can order. Tick “Sellable” for it.");
+    if (x.levels.length > 1 && !d.packs.some((p) => p.key === d.purchasePackKey) && d.purchasePackKey !== "base")
+      err("purchasePack", "packs", "Choose the unit you buy and receive this product in.");
+  }
 
   /* pricing */
   if (!(x.cost > 0)) err("costPrice", "pricing", "Enter the purchase cost per base unit.");
@@ -474,6 +502,7 @@ export function buildItem(
   const mrp = orZero(x.mrp);
   const sell = orZero(x.sell);
   const packLevels = x.levels.filter((l) => !l.isBase);
+  const draftByKey = Object.fromEntries(d.packs.map((p) => [p.key, p]));
   const packSizes: PackSize[] = packLevels.map((l) => ({
     id: `pk-${l.name.toLowerCase().replace(/\s+/g, "-")}`,
     packNameEn: l.name,
@@ -482,16 +511,22 @@ export function buildItem(
     packMrp: round2(mrp * l.multiplier),
     packSellingPrice: round2(sell * l.multiplier),
     isDefault: l.key === x.defaultLevel.key,
+    isSellable: draftByKey[l.key]?.sellable !== false || l.key === x.defaultLevel.key,
+    isPurchaseUnit: l.key === d.purchasePackKey,
+    barcode: draftByKey[l.key]?.barcode.trim() || undefined,
   }));
-  if (x.defaultLevel.isBase) {
+  // The base unit gets its own row whenever it carries a flag.
+  if (x.defaultLevel.isBase || !d.baseSellable || d.purchasePackKey === "base") {
     packSizes.unshift({
-      id: `pk-${d.baseUnit.toLowerCase()}`,
+      id: "pk-base",
       packNameEn: d.baseUnit,
       packNameBn: bn[d.baseUnit] ?? d.baseUnit,
       multiplierToBase: 1,
       packMrp: mrp,
       packSellingPrice: sell,
-      isDefault: true,
+      isDefault: x.defaultLevel.isBase,
+      isSellable: d.baseSellable || x.defaultLevel.isBase,
+      isPurchaseUnit: d.purchasePackKey === "base",
     });
   }
   const pricingTiers: QuantityPricingTier[] = x.tierRows

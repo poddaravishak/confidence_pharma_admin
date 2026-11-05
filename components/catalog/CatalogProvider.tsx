@@ -106,7 +106,7 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       inc(c.category, p.category);
       if (p.subcategory) inc(c.subcategory, `${p.category}/${p.subcategory}`);
       inc(c.brand, p.brand);
-      const used = new Set([p.baseUnit, p.packUnit, ...(p.packSizes ?? []).map((s) => s.packNameEn)]);
+      const used = new Set([p.baseUnit, p.packUnit, ...(p.packSizes ?? []).map((s) => s.packNameEn)].filter(Boolean));
       used.forEach((u) => inc(c.unit, u));
       inc(c.dosageForm, p.dosageForm ?? p.medicineType);
     }

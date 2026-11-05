@@ -100,6 +100,11 @@ export interface Brand {
   description?: string;
 }
 
+/**
+ * One pack level of a product, expressed as a conversion of its base unit.
+ * Stock is always counted in the base unit; `multiplierToBase` is how many
+ * base units one of this pack holds (1 Box = 20 Tablets → 20).
+ */
 export interface PackSize {
   id: string;
   packNameEn: string;
@@ -107,7 +112,14 @@ export interface PackSize {
   multiplierToBase: number;
   packMrp: number;
   packSellingPrice: number;
+  /** Default unit on new order lines. */
   isDefault: boolean;
+  /** Customers may order in this unit (default true). */
+  isSellable?: boolean;
+  /** Default unit for purchase orders and goods receiving. */
+  isPurchaseUnit?: boolean;
+  /** Barcode printed on this pack level. */
+  barcode?: string;
 }
 
 export interface QuantityPricingTier {
@@ -159,14 +171,23 @@ export interface OrderItem {
   id: string;
   productId: string;
   productName: string;
+  /** Unit the line was ordered in, e.g. "Strip (10 Tablets)". */
   packSizeName: string;
+  /** PackSize id of the ordered unit ("base" = the base unit itself). */
+  packSizeId?: string;
+  /** Quantity in the ordered unit. */
   quantity: number;
+  /** Price of one ordered unit. */
   unitPrice: number;
   discountPct: number;
   lineTotal: number;
   cogsCost: number;
-  /** Base units (tablets, vials…) in one ordered pack. Used to move stock. */
+  /** Conversion factor: base units (tablets, vials…) in one ordered unit. Used to move stock. */
   unitsPerPack?: number;
+  /** quantity × unitsPerPack — what leaves the shelf, in base units. */
+  baseQuantity?: number;
+  /** Base unit name at the time of ordering (Tablet, Vial…). */
+  baseUnit?: string;
   /** FEFO batches picked for this line, in base units. Set at dispatch. */
   batchAllocations?: { batchId: string; quantity: number }[];
   /** Packs the customer accepted at the door (set on delivery). */
@@ -489,7 +510,11 @@ export interface PurchaseOrderDraft {
   id: string;
   supplierId: string;
   createdAt: string;
-  lines: { itemId: string; packs: number; unitCost: number }[];
+  /**
+   * `packs` are in the item's purchase unit; `unitsPerPack` snapshots its
+   * conversion so receiving can post the exact base quantity.
+   */
+  lines: { itemId: string; packs: number; unitCost: number; unitName?: string; unitsPerPack?: number }[];
   status: 'DRAFT' | 'SENT';
 }
 

@@ -40,7 +40,10 @@ import { ColdChainTag, ExpiryBadge, StockStatusBadge } from "@/components/invent
 import { useAppStore } from "@/lib/store/AppStore";
 import { useCatalog } from "@/components/catalog/CatalogProvider";
 import { ControlledTag, KeyValues, ProductStatusBadge, ProductThumb, RxTag } from "@/components/catalog/shared";
-import { fmtPct, hierarchyText, marginPct, marginTone, packHierarchy, round2 } from "@/components/catalog/catalog-utils";
+import { fmtPct, marginPct, marginTone, round2 } from "@/components/catalog/catalog-utils";
+import { availableIn, conversionChain, defaultSaleLevel, formatQty, qtyText, unitLevels } from "@/lib/units";
+import { packUnitOf } from "@/components/orders/shared";
+import { ConversionLadder, UnitConverter } from "@/components/units";
 
 type Tab = "overview" | "stock" | "movements" | "sales";
 
@@ -75,6 +78,8 @@ export default function ProductDetailPage() {
               key: `${o.id}-${l.id}`,
               order: o,
               line: l,
+              /** Unit the line was ordered in (lines may use different units). */
+              unit: packUnitOf(l),
               packs,
               units: packs * per,
               revenue: round2(netPackPrice(l) * packs),
@@ -102,10 +107,13 @@ export default function ProductDetailPage() {
     );
   }
 
-  const totals = sales.reduce(
-    (t, s) => ({ units: t.units + s.units, revenue: t.revenue + s.revenue, cogs: t.cogs + s.cogs, packs: t.packs + s.packs }),
-    { units: 0, revenue: 0, cogs: 0, packs: 0 }
+  // Lines can be in different units, so add up base units and convert once.
+  const saleLevel = defaultSaleLevel(item);
+  const sums = sales.reduce(
+    (t, s) => ({ units: t.units + s.units, revenue: t.revenue + s.revenue, cogs: t.cogs + s.cogs }),
+    { units: 0, revenue: 0, cogs: 0 }
   );
+  const totals = { ...sums, packs: round2(sums.units / saleLevel.factor) };
   const margin = marginPct(item.costPrice, item.sellingPrice);
   const canEdit = can("catalog", "edit");
 
@@ -203,16 +211,16 @@ export default function ProductDetailPage() {
         />
         <StatCard label="Stock value" value={formatCurrency(round2(stock.value))} hint="At batch cost" icon={Wallet} tone="blue" />
         <StatCard
-          label={`Price per ${item.packUnit.toLowerCase()}`}
-          value={formatCurrency(round2(item.sellingPrice * item.unitsPerPack))}
-          hint={`MRP ${formatCurrency(round2(item.mrp * item.unitsPerPack))} · ${fmtPct(margin)} margin`}
+          label={`Price per ${saleLevel.name.toLowerCase()}`}
+          value={formatCurrency(saleLevel.price)}
+          hint={`MRP ${formatCurrency(saleLevel.mrp)} · ${fmtPct(margin)} margin`}
           icon={Package}
           tone="slate"
         />
         <StatCard
           label="Sold"
-          value={totals.packs.toLocaleString("en-US")}
-          hint={`${plural(item.packUnit, totals.packs).toLowerCase()} · ${totals.units.toLocaleString("en-US")} ${plural(item.baseUnit, totals.units).toLowerCase()}`}
+          value={<span className="text-lg">{formatQty(totals.units, item, "sale")}</span>}
+          hint={`${totals.units.toLocaleString("en-US")} ${plural(item.baseUnit, totals.units).toLowerCase()} in total`}
           icon={ShoppingCart}
           tone="slate"
         />
@@ -221,7 +229,7 @@ export default function ProductDetailPage() {
 
       <Tabs label="Product sections" value={tab} onChange={setTab} tabs={tabs} />
 
-      {tab === "overview" && <Overview item={item} barcodes={packBarcodes[item.id] ?? {}} history={priceHistory[item.id] ?? []} supplier={supplierById[item.supplierId]?.name} warehouse={item.defaultWarehouseId ? warehouseById[item.defaultWarehouseId]?.name : undefined} />}
+      {tab === "overview" && <Overview item={item} sellable={stock?.sellable ?? 0} barcodes={packBarcodes[item.id] ?? {}} history={priceHistory[item.id] ?? []} supplier={supplierById[item.supplierId]?.name} warehouse={item.defaultWarehouseId ? warehouseById[item.defaultWarehouseId]?.name : undefined} />}
 
       {tab === "stock" && (
         <StockTab item={item} batches={itemBatches} warehouseById={warehouseById} />
@@ -296,20 +304,24 @@ export default function ProductDetailPage() {
 
 function Overview({
   item,
+  sellable,
   barcodes,
   history,
   supplier,
   warehouse,
 }: {
   item: ReturnType<typeof useCatalog>["products"][number];
+  /** Sellable stock in base units. */
+  sellable: number;
   barcodes: Record<string, string>;
   history: ReturnType<typeof useCatalog>["priceHistory"][string];
   supplier?: string;
   warehouse?: string;
 }) {
-  const levels = packHierarchy(item);
+  const ladder = unitLevels(item);
+  const sale = ladder.find((l) => l.isDefaultSale)!;
   const tiers = [...(item.pricingTiers ?? [])].sort((a, b) => a.minQuantity - b.minQuantity);
-  const packCost = item.costPrice * item.unitsPerPack;
+  const packCost = sale.cost;
   const visible = item.visibleTo ?? ALL_CUSTOMER_TYPES;
 
   return (
@@ -345,44 +357,64 @@ function Overview({
         </Card>
 
         <Card className="overflow-hidden">
-          <CardHeader title="Pack hierarchy" description={hierarchyText(levels)} />
+          <CardHeader
+            title="Units & conversions"
+            description={`Stock is counted in ${plural(item.baseUnit, 2).toLowerCase()}. Every other unit is a conversion: ${conversionChain(item)}.`}
+          />
+          <div className="border-b border-slate-100 px-4 pb-3 sm:px-5">
+            <ConversionLadder item={item} />
+          </div>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[560px] text-left text-sm">
+            <table className="w-full min-w-[720px] text-left text-sm">
               <thead className="bg-surface text-xs font-medium text-apptext-secondary">
                 <tr>
                   <th className="px-4 py-2">Unit</th>
-                  <th className="px-3 py-2 text-right">Base units</th>
+                  <th className="px-3 py-2">Contains</th>
+                  <th className="px-3 py-2 text-right">= Base units</th>
                   <th className="px-3 py-2">Barcode</th>
                   <th className="px-3 py-2 text-right">Cost</th>
                   <th className="px-3 py-2 text-right">MRP</th>
-                  <th className="px-4 py-2 text-right">Selling</th>
+                  <th className="px-3 py-2 text-right">Selling</th>
+                  <th className="px-4 py-2 text-right">In stock</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 tabular-nums">
-                {levels.map((l) => (
-                  <tr key={l.name} className={cn(l.isDefault && "bg-brand-light/30")}>
+                {ladder.map((l) => (
+                  <tr key={l.id} className={cn(l.isDefaultSale && "bg-brand-light/30")}>
                     <td className="px-4 py-2">
                       <span className="font-medium text-apptext-primary">1 {l.name}</span>
-                      {!l.isBase && <span className="ml-1 text-xs text-apptext-secondary">= {l.perParent} × previous</span>}
-                      {l.isDefault && <span className="ml-1.5 rounded bg-brand-light px-1 py-px text-[11px] font-medium text-brand-primary">Default</span>}
+                      <span className="ml-1.5 inline-flex flex-wrap gap-1 align-middle">
+                        {l.isBase && <Badge className="border-emerald-200 bg-emerald-50 text-emerald-700">Base</Badge>}
+                        {l.isDefaultSale && <Badge className="border-blue-200 bg-brand-light text-brand-primary">Default sale</Badge>}
+                        {l.isDefaultPurchase && <Badge className="border-violet-200 bg-violet-50 text-violet-700">Purchase</Badge>}
+                        {!l.sellable && <Badge className="border-slate-200 bg-slate-50 text-slate-500">Not sold</Badge>}
+                      </span>
                     </td>
-                    <td className="px-3 py-2 text-right">{l.multiplier.toLocaleString("en-US")}</td>
-                    <td className="px-3 py-2 font-mono text-xs text-apptext-secondary">{(l.isBase ? item.barcode : barcodes[l.name]) || "—"}</td>
-                    <td className="px-3 py-2 text-right">{formatCurrency(round2(item.costPrice * l.multiplier))}</td>
-                    <td className="px-3 py-2 text-right">{formatCurrency(round2(item.mrp * l.multiplier))}</td>
-                    <td className="px-4 py-2 text-right font-semibold text-apptext-primary">{formatCurrency(round2(item.sellingPrice * l.multiplier))}</td>
+                    <td className="px-3 py-2 text-xs text-apptext-secondary">{l.childName ? qtyText(l.perChild, l.childName) : "Smallest unit"}</td>
+                    <td className="px-3 py-2 text-right">{l.factor.toLocaleString("en-US")}</td>
+                    <td className="px-3 py-2 font-mono text-xs text-apptext-secondary">{(l.isBase ? item.barcode : barcodes[l.name] ?? l.barcode) || "—"}</td>
+                    <td className="px-3 py-2 text-right">{formatCurrency(l.cost)}</td>
+                    <td className="px-3 py-2 text-right">{formatCurrency(l.mrp)}</td>
+                    <td className="px-3 py-2 text-right font-semibold text-apptext-primary">{formatCurrency(l.price)}</td>
+                    <td className="px-4 py-2 text-right">{availableIn(sellable, l).toLocaleString("en-US")}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          <div className="border-t border-slate-100 px-4 py-4 sm:px-5">
+            <UnitConverter item={item} stockBase={sellable} />
+          </div>
         </Card>
 
         <Card className="overflow-hidden">
-          <CardHeader title="Quantity price tiers" description={`Quantities in ${plural(item.packUnit, 2).toLowerCase()}`} />
+          <CardHeader
+            title="Quantity price tiers"
+            description={`Quantities in ${plural(sale.name, 2).toLowerCase()}. Lines in other units count by their ${item.baseUnit.toLowerCase()} equivalent.`}
+          />
           {tiers.length === 0 ? (
             <p className="px-5 py-6 text-center text-sm text-apptext-secondary">
-              No tiers. Every order pays {formatCurrency(round2(item.sellingPrice * item.unitsPerPack))} per {item.packUnit.toLowerCase()}.
+              No tiers. Every order pays {formatCurrency(sale.price)} per {sale.name.toLowerCase()}.
             </p>
           ) : (
             <div className="overflow-x-auto">
@@ -390,7 +422,7 @@ function Overview({
                 <thead className="bg-surface text-xs font-medium text-apptext-secondary">
                   <tr>
                     <th className="px-4 py-2">Order quantity</th>
-                    <th className="px-3 py-2 text-right">Price / {item.packUnit.toLowerCase()}</th>
+                    <th className="px-3 py-2 text-right">Price / {sale.name.toLowerCase()}</th>
                     <th className="px-3 py-2 text-right">Discount</th>
                     <th className="px-4 py-2 text-right">Margin</th>
                   </tr>
@@ -447,7 +479,7 @@ function Overview({
                 ["Margin", <span key="m" className={marginTone(marginPct(item.costPrice, item.sellingPrice))}>{fmtPct(marginPct(item.costPrice, item.sellingPrice))}</span>],
                 ["VAT", `${item.vatPct ?? 0}%`],
                 ["Max discount", `${item.maxDiscountPct ?? 0}%`],
-                ["Minimum order", `${item.minOrderQty ?? 1} ${plural(item.packUnit, item.minOrderQty ?? 1).toLowerCase()}`],
+                ["Minimum order", `${item.minOrderQty ?? 1} ${plural(sale.name, item.minOrderQty ?? 1).toLowerCase()}`],
               ]}
             />
           </div>
@@ -611,6 +643,7 @@ function StockTab({
 type SaleRow = {
   key: string;
   order: ReturnType<typeof useAppStore>["orders"][number];
+  unit: string;
   packs: number;
   units: number;
   revenue: number;
@@ -642,11 +675,11 @@ function SalesTab({
       const m = list.find((x) => x.key === s.order.createdAt.slice(0, 7));
       if (m) {
         m.revenue = round2(m.revenue + s.revenue);
-        m.packs += s.packs;
+        m.packs = round2(m.packs + s.units / defaultSaleLevel(item).factor);
       }
     }
     return list;
-  }, [sales]);
+  }, [sales, item]);
 
   if (sales.length === 0) {
     return (
@@ -690,7 +723,7 @@ function SalesTab({
       </Card>
 
       <Card className="overflow-hidden">
-        <CardHeader title="Orders with this product" description={`${totals.packs.toLocaleString("en-US")} ${plural(item.packUnit, totals.packs).toLowerCase()} delivered or open`} />
+        <CardHeader title="Orders with this product" description={`${formatQty(totals.units, item, "sale")} delivered or open`} />
         <div className="overflow-x-auto">
           <table className="w-full min-w-[760px] text-left text-sm">
             <thead className="bg-surface text-xs font-medium text-apptext-secondary">
@@ -698,8 +731,8 @@ function SalesTab({
                 <th className="px-4 py-2">Order</th>
                 <th className="px-3 py-2">Customer</th>
                 <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2 text-right">Packs</th>
-                <th className="px-3 py-2 text-right">Units</th>
+                <th className="px-3 py-2 text-right">Quantity</th>
+                <th className="px-3 py-2 text-right">{plural(item.baseUnit, 2)}</th>
                 <th className="px-4 py-2 text-right">Revenue</th>
               </tr>
             </thead>
@@ -718,7 +751,9 @@ function SalesTab({
                     <td className="px-3 py-2.5">
                       <Badge className={meta.badge}>{meta.label}</Badge>
                     </td>
-                    <td className="px-3 py-2.5 text-right tabular-nums">{s.packs.toLocaleString("en-US")}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums">
+                      {s.packs.toLocaleString("en-US")} <span className="text-xs text-apptext-secondary">{plural(s.unit, s.packs).toLowerCase()}</span>
+                    </td>
                     <td className="px-3 py-2.5 text-right tabular-nums">{s.units.toLocaleString("en-US")}</td>
                     <td className="px-4 py-2.5 text-right font-medium tabular-nums text-apptext-primary">{formatCurrency(s.revenue)}</td>
                   </tr>

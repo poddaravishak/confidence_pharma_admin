@@ -11,6 +11,7 @@ import { useAppStore } from "@/lib/store/AppStore";
 import { useCatalog } from "./CatalogProvider";
 import { downloadCsv, generateSku, parseCsv, round2, yes } from "./catalog-utils";
 import { suggestSupplier } from "./product-draft";
+import { unitNameBn, validateLadder } from "@/lib/units";
 
 const COLUMNS: { key: string; required?: boolean; example: string; note: string }[] = [
   { key: "name", required: true, example: "Ace Plus 500mg Tablet", note: "Brand name with strength" },
@@ -21,8 +22,9 @@ const COLUMNS: { key: string; required?: boolean; example: string; note: string 
   { key: "strength", example: "500mg", note: "" },
   { key: "dosage_form", example: "Tablet", note: "" },
   { key: "base_unit", required: true, example: "Tablet", note: "Unit stock is counted in" },
-  { key: "pack_unit", example: "Box", note: "Default selling pack" },
-  { key: "units_per_pack", example: "100", note: "Base units in one pack" },
+  { key: "pack_levels", example: "Strip=10;Box=10", note: "Optional ladder, smallest first: each level = count of the level below" },
+  { key: "pack_unit", example: "Box", note: "Default sale unit" },
+  { key: "units_per_pack", example: "100", note: "Base units in one pack (when pack_levels is empty)" },
   { key: "cost_price", required: true, example: "2.10", note: "Per base unit" },
   { key: "selling_price", required: true, example: "2.40", note: "Per base unit" },
   { key: "mrp", required: true, example: "2.80", note: "Per base unit" },
@@ -36,10 +38,10 @@ const COLUMNS: { key: string; required?: boolean; example: string; note: string 
 
 const SAMPLE = [
   COLUMNS.map((c) => c.key),
-  ["Ace Plus 500mg Tablet", "Paracetamol + Caffeine", "Square Pharmaceuticals", "Allopathic", "Analgesics", "500mg + 65mg", "Tablet", "Tablet", "Box", "100", "2.10", "2.40", "2.80", "2000", "", "032-0101-001", "no", "no", "active"],
-  ["Ciprocin 500mg Tablet", "Ciprofloxacin", "Beximco Pharmaceuticals", "Allopathic", "Antibiotics", "500mg", "Tablet", "Tablet", "Box", "50", "11", "13", "15", "500", "", "037-0221-008", "yes", "no", "active"],
-  ["Orsaline-N Sachet", "Oral Rehydration Salts", "ACI", "Nutrition", "Oral rehydration", "10.25g", "Powder (sachet)", "Sachet", "Box", "20", "4.5", "5.2", "6", "400", "", "", "no", "no", "draft"],
-  ["Insulin pen needle 4mm", "Pen needle", "Novo Nordisk", "Medical devices", "", "32G 4mm", "Device", "Piece", "Box", "100", "12", "16", "14", "", "", "", "no", "no", "active"],
+  ["Ace Plus 500mg Tablet", "Paracetamol + Caffeine", "Square Pharmaceuticals", "Allopathic", "Analgesics", "500mg + 65mg", "Tablet", "Tablet", "Strip=10;Box=10", "Box", "", "2.10", "2.40", "2.80", "2000", "", "032-0101-001", "no", "no", "active"],
+  ["Ciprocin 250mg Tablet", "Ciprofloxacin", "Beximco Pharmaceuticals", "Allopathic", "Antibiotics", "250mg", "Tablet", "Tablet", "Strip=10;Box=2;Carton=50", "Box", "", "8", "9.5", "11", "500", "", "037-0221-008", "yes", "no", "active"],
+  ["Orsaline-N Sachet", "Oral Rehydration Salts", "ACI", "Nutrition", "Oral rehydration", "10.25g", "Powder (sachet)", "Sachet", "Box=20;Carton=25", "Box", "", "4.5", "5.2", "6", "400", "", "", "no", "no", "draft"],
+  ["Insulin pen needle 4mm", "Pen needle", "Novo Nordisk", "Medical devices", "", "32G 4mm", "Device", "Piece", "", "Box", "100", "12", "16", "14", "", "", "", "no", "no", "active"],
 ];
 
 interface PreviewRow {
@@ -50,6 +52,24 @@ interface PreviewRow {
 }
 
 const norm = (h: string) => h.trim().toLowerCase().replace(/[\s-]+/g, "_");
+
+/**
+ * "Strip=10;Box=2;Carton=50" → [{Strip, 10}, {Box, 20}, {Carton, 1000}].
+ * Each number is how many of the level below make one of this level.
+ */
+function parseLevels(src: string): { name: string; factor: number }[] | null {
+  const parts = src.split(/[;|]/).map((p) => p.trim()).filter(Boolean);
+  if (!parts.length) return null;
+  const out: { name: string; factor: number }[] = [];
+  let factor = 1;
+  for (const part of parts) {
+    const m = /^([A-Za-z][A-Za-z ]*?)\s*[=:x×]\s*(\d+)$/.exec(part);
+    if (!m || Number(m[2]) < 2) return null;
+    factor *= Number(m[2]);
+    out.push({ name: m[1].trim().replace(/^\w/, (c) => c.toUpperCase()), factor });
+  }
+  return out;
+}
 
 export function CsvImportModal({ onClose }: { onClose: () => void }) {
   const { addItem, notify, suppliers } = useInventory();
@@ -76,6 +96,16 @@ export function CsvImportModal({ onClose }: { onClose: () => void }) {
       if (values.mrp && !(nums[2] > 0)) errors.push("mrp must be a number");
       if (nums[1] > 0 && nums[2] > 0 && nums[1] > nums[2]) errors.push("selling_price is above mrp");
       if (values.units_per_pack && !/^\d+$/.test(values.units_per_pack)) errors.push("units_per_pack must be a whole number");
+      if (values.pack_levels) {
+        const ladder = parseLevels(values.pack_levels);
+        if (!ladder) errors.push('pack_levels must look like "Strip=10;Box=2" (whole numbers of 2 or more)');
+        else {
+          const problems = validateLadder([{ name: values.base_unit || "Base", factor: 1 }, ...ladder.map((l) => ({ name: l.name, factor: l.factor }))]);
+          errors.push(...problems.map((m) => `pack_levels: ${m}`));
+          if (values.pack_unit && !ladder.some((l) => l.name.toLowerCase() === values.pack_unit.toLowerCase()) && values.pack_unit.toLowerCase() !== (values.base_unit ?? "").toLowerCase())
+            errors.push(`pack_unit "${values.pack_unit}" is not in pack_levels`);
+        }
+      }
       if (values.brand && !brands.some((b) => b.name.toLowerCase() === values.brand.toLowerCase())) errors.push(`unknown brand "${values.brand}"`);
       const cat = categories.find((c) => c.nameEn.toLowerCase() === (values.category ?? "").toLowerCase());
       if (values.category && !cat) errors.push(`unknown category "${values.category}"`);
@@ -100,24 +130,27 @@ export function CsvImportModal({ onClose }: { onClose: () => void }) {
       const sub = cat.subcategories.find((s) => s.nameEn.toLowerCase() === (v.subcategory ?? "").toLowerCase());
       const sku = generateSku(brand.skuPrefix, v.name, v.strength ?? "", taken);
       taken.add(sku);
-      const units = Math.max(1, parseInt(v.units_per_pack || "1", 10) || 1);
-      const packUnit = v.pack_unit && units > 1 ? v.pack_unit : v.base_unit;
       const cost = parseFloat(v.cost_price);
       const sell = parseFloat(v.selling_price);
       const mrp = parseFloat(v.mrp);
       const cold = yes(v.cold_chain);
       const active = /^active$/i.test(v.status ?? "");
-      const packSizes: PackSize[] = [
-        {
-          id: `pk-${packUnit.toLowerCase()}`,
-          packNameEn: packUnit,
-          packNameBn: packUnit,
-          multiplierToBase: units,
-          packMrp: round2(mrp * units),
-          packSellingPrice: round2(sell * units),
-          isDefault: true,
-        },
-      ];
+      // Ladder: pack_levels wins, else a single pack_unit × units_per_pack.
+      const single = Math.max(1, parseInt(v.units_per_pack || "1", 10) || 1);
+      const ladder = (v.pack_levels && parseLevels(v.pack_levels)) || (v.pack_unit && single > 1 ? [{ name: v.pack_unit, factor: single }] : []);
+      const defaultLevel = ladder.find((l) => l.name.toLowerCase() === (v.pack_unit ?? "").toLowerCase()) ?? ladder[ladder.length - 1];
+      const packUnit = defaultLevel?.name ?? v.base_unit;
+      const units = defaultLevel?.factor ?? 1;
+      const packSizes: PackSize[] = ladder.map((l, idx) => ({
+        id: `pk-${l.name.toLowerCase()}`,
+        packNameEn: l.name,
+        packNameBn: unitNameBn(l.name),
+        multiplierToBase: l.factor,
+        packMrp: round2(mrp * l.factor),
+        packSellingPrice: round2(sell * l.factor),
+        isDefault: l === defaultLevel,
+        isPurchaseUnit: idx === ladder.length - 1,
+      }));
       const item: InventoryItem = {
         id: `prod-${stamp}${i}`,
         sku,
@@ -281,7 +314,9 @@ export function CsvImportModal({ onClose }: { onClose: () => void }) {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {rows.map((r) => {
-                  const units = Math.max(1, parseInt(r.values.units_per_pack || "1", 10) || 1);
+                  const ladder = parseLevels(r.values.pack_levels ?? "") ?? [];
+                  const pick = ladder.find((l) => l.name.toLowerCase() === (r.values.pack_unit ?? "").toLowerCase()) ?? ladder[ladder.length - 1];
+                  const units = pick?.factor ?? Math.max(1, parseInt(r.values.units_per_pack || "1", 10) || 1);
                   const sell = parseFloat(r.values.selling_price);
                   return (
                     <tr key={r.line} className={cn(r.errors.length > 0 && "bg-rose-50/40")}>
@@ -296,6 +331,11 @@ export function CsvImportModal({ onClose }: { onClose: () => void }) {
                       <td className="px-3 py-2 text-right tabular-nums">
                         {sell > 0 ? formatCurrency(round2(sell * units)) : "—"}
                         {r.values.pack_unit && <span className="block text-xs text-slate-500">per {r.values.pack_unit}</span>}
+                        {ladder.length > 0 && (
+                          <span className="block text-[11px] text-slate-400">
+                            1 {ladder[ladder.length - 1].name} = {ladder[ladder.length - 1].factor.toLocaleString("en-US")} {r.values.base_unit}
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-2 text-xs">
                         {r.errors.length ? (

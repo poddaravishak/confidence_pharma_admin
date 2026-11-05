@@ -21,21 +21,35 @@ import {
 import { Customer, InventoryItem, Order, PaymentChannel, QuantityPricingTier } from "@/lib/types";
 import { buildOrderLine, isClosedStatus, orderTotals } from "@/lib/orders";
 import { packLabel } from "@/lib/inventory";
+import { UnitLevel, defaultSaleLevel, formatQty, pluralUnit, qtyText, sellableLevels, unitLevels } from "@/lib/units";
+import { UnitSelect } from "@/components/units";
 import { mockDeliveryZoneRules } from "@/lib/db/mock-data";
 import { useAppStore } from "@/lib/store/AppStore";
 import { useInventory } from "@/components/inventory/InventoryProvider";
 import { AccessDenied } from "@/components/auth";
 import { cn, formatCurrency } from "@/lib/utils";
 import { Badge, Card, CardHeader, EmptyState, Field, PageHeader, SearchInput, Switch, btn, inputClass } from "@/components/ui";
-import { DELIVERY_TYPE_META, customerTypeLabel, isCreditMethod, methodForChannel, packs as packsText } from "@/components/orders/shared";
+import { DELIVERY_TYPE_META, customerTypeLabel, isCreditMethod, methodForChannel } from "@/components/orders/shared";
 
 type DeliveryType = NonNullable<Order["deliveryType"]>;
 
 interface DraftLine {
   key: string;
   productId: string;
+  /** Quantity in the chosen unit. */
   packs: number;
+  /** Unit of the product's ladder (lib/units.ts). */
+  levelId: string;
   manualDiscount: number;
+}
+
+/** Stock of one product in base units (shared by every line of it). */
+interface BaseStock {
+  sellable: number;
+  reserved: number;
+  free: number;
+  /** Base units asked for by all lines of this product in this order. */
+  ordered: number;
 }
 
 const DEFAULT_ZONE = { zoneName: "Default delivery zone", minOrderForFreeDelivery: 5000, standardDeliveryFee: 100, expressDeliveryFee: 250 };
@@ -60,14 +74,19 @@ function customerBlock(c: Customer): string | null {
   return null;
 }
 
-function tierFor(item: InventoryItem, packs: number): QuantityPricingTier | undefined {
-  return item.pricingTiers?.find((t) => packs >= t.minQuantity && (t.maxQuantity === null || packs <= t.maxQuantity));
+/**
+ * Quantity tiers are defined in the default sale unit (e.g. Boxes). Lines in
+ * other units count by their base-unit equivalent, so 4 Strips of a
+ * 2-strip box count as 2 Boxes towards the tier.
+ */
+function tierFor(item: InventoryItem, saleUnits: number): QuantityPricingTier | undefined {
+  return item.pricingTiers?.find((t) => saleUnits >= t.minQuantity && (t.maxQuantity === null || saleUnits <= t.maxQuantity));
 }
 
-/** Tier discount as a % of the pack price (tiers may give a % or only a reduced pack price). */
+/** Tier discount as a % of the default pack price (tiers may give a % or only a reduced pack price). */
 function tierDiscountPct(item: InventoryItem, t: QuantityPricingTier): number {
   if (t.discountPct > 0) return t.discountPct;
-  const packPrice = item.sellingPrice * item.unitsPerPack;
+  const packPrice = defaultSaleLevel(item).price;
   if (t.unitPrice > 0 && t.unitPrice < packPrice) return round2((1 - t.unitPrice / packPrice) * 100);
   return 0;
 }
@@ -138,14 +157,22 @@ export default function NewOrderPage() {
     return m;
   }, [orders, itemById]);
 
-  const stockPacks = (item: InventoryItem) => {
+  /** Base units asked for per product across every line of this order. */
+  const orderedBase = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const l of lines) {
+      const item = itemById[l.productId];
+      if (!item) continue;
+      const level = unitLevels(item).find((u) => u.id === l.levelId) ?? defaultSaleLevel(item);
+      m[l.productId] = (m[l.productId] ?? 0) + Math.max(0, Math.floor(l.packs || 0)) * level.factor;
+    }
+    return m;
+  }, [lines, itemById]);
+
+  const baseStock = (item: InventoryItem): BaseStock => {
     const sellable = stockByItem[item.id]?.sellable ?? 0;
-    const per = Math.max(1, item.unitsPerPack);
-    return {
-      sellable: Math.floor(sellable / per),
-      free: Math.max(0, Math.floor((sellable - (reserved[item.id] ?? 0)) / per)),
-      reserved: Math.ceil((reserved[item.id] ?? 0) / per),
-    };
+    const res = reserved[item.id] ?? 0;
+    return { sellable, reserved: res, free: Math.max(0, sellable - res), ordered: orderedBase[item.id] ?? 0 };
   };
 
   /* ---------- product search ---------- */
@@ -159,14 +186,34 @@ export default function NewOrderPage() {
       .slice(0, 8);
   }, [items, productQuery, customer]);
 
-  const addProduct = (item: InventoryItem) => {
+  const addProduct = (item: InventoryItem, levelId = defaultSaleLevel(item).id) => {
     setLines((prev) => {
-      const hit = prev.find((l) => l.productId === item.id);
+      const hit = prev.find((l) => l.productId === item.id && l.levelId === levelId);
       if (hit) return prev.map((l) => (l.key === hit.key ? { ...l, packs: l.packs + 1 } : l));
-      return [...prev, { key: `${item.id}-${Date.now()}`, productId: item.id, packs: Math.max(1, item.minOrderQty ?? 1), manualDiscount: 0 }];
+      const isDefault = levelId === defaultSaleLevel(item).id;
+      return [
+        ...prev,
+        {
+          key: `${item.id}-${levelId}-${Date.now()}`,
+          productId: item.id,
+          levelId,
+          packs: isDefault ? Math.max(1, item.minOrderQty ?? 1) : 1,
+          manualDiscount: 0,
+        },
+      ];
     });
     setProductQuery("");
   };
+
+  /** Change a line's unit; merges into an existing line of that unit. */
+  const changeUnit = (key: string, levelId: string) =>
+    setLines((prev) => {
+      const line = prev.find((l) => l.key === key);
+      if (!line) return prev;
+      const twin = prev.find((l) => l.key !== key && l.productId === line.productId && l.levelId === levelId);
+      if (twin) return prev.filter((l) => l.key !== key).map((l) => (l.key === twin.key ? { ...l, packs: l.packs + line.packs } : l));
+      return prev.map((l) => (l.key === key ? { ...l, levelId } : l));
+    });
 
   const patchLine = (key: string, patch: Partial<DraftLine>) => setLines((prev) => prev.map((l) => (l.key === key ? { ...l, ...patch } : l)));
   const removeLine = (key: string) => setLines((prev) => prev.filter((l) => l.key !== key));
@@ -176,11 +223,15 @@ export default function NewOrderPage() {
     .filter((l) => itemById[l.productId])
     .map((l) => {
       const item = itemById[l.productId];
-      const tier = tierFor(item, l.packs);
+      const levels = unitLevels(item);
+      const level = levels.find((u) => u.id === l.levelId) ?? defaultSaleLevel(item);
+      const sale = defaultSaleLevel(item);
+      // Tier on the product's total across lines, counted in the default sale unit.
+      const tier = tierFor(item, Math.floor((orderedBase[item.id] ?? 0) / sale.factor));
       const maxDisc = item.maxDiscountPct ?? DEFAULT_MAX_DISCOUNT;
       const discountPct = tier ? tierDiscountPct(item, tier) : Math.min(Math.max(0, l.manualDiscount || 0), maxDisc);
-      const line = buildOrderLine(l.key, item, Math.max(1, Math.floor(l.packs || 0)), discountPct);
-      return { draft: l, item, tier, maxDisc, discountPct, line, stock: stockPacks(item) };
+      const line = buildOrderLine(l.key, item, Math.max(1, Math.floor(l.packs || 0)), discountPct, undefined, level.id);
+      return { draft: l, item, level, sale, units: sellableLevels(item), tier, maxDisc, discountPct, line, stock: baseStock(item) };
     });
 
   const requiresCold = priced.some((p) => p.item.isColdChain);
@@ -233,8 +284,9 @@ export default function NewOrderPage() {
     errors.push(`Order exceeds available credit by ${formatCurrency(totals.grandTotal - (credit?.available ?? 0))}. Over-limit credit orders are blocked in settings.`);
   else if (overLimit) warnings.push(`Order exceeds available credit by ${formatCurrency(totals.grandTotal - (credit?.available ?? 0))}.`);
   if (deliveryCharge < 0) errors.push("Delivery charge can't be negative.");
-  const stockShort = priced.filter((p) => p.line.quantity > p.stock.free);
-  if (stockShort.length) warnings.push(`${stockShort.length} ${stockShort.length === 1 ? "line exceeds" : "lines exceed"} free stock and may be short at packing.`);
+  const shortProducts = new Set(priced.filter((p) => p.stock.ordered > p.stock.free).map((p) => p.item.id));
+  if (shortProducts.size)
+    warnings.push(`${shortProducts.size} ${shortProducts.size === 1 ? "product exceeds" : "products exceed"} free stock and may be short at packing.`);
   if (customer?.isExceptionApproval && customer.verificationStatus !== "APPROVED")
     warnings.push("Customer is ordering under a KYC exception approval.");
   if (customer && !isCredit && customer.currentDue > customer.creditLimit && customer.creditLimit > 0)
@@ -248,7 +300,7 @@ export default function NewOrderPage() {
     setSubmitting(true);
     const order = createOrder({
       customerId: customer.id,
-      lines: priced.map((p) => ({ productId: p.item.id, packs: p.line.quantity, discountPct: p.discountPct })),
+      lines: priced.map((p) => ({ productId: p.item.id, packs: p.line.quantity, discountPct: p.discountPct, levelId: p.level.id })),
       deliveryType: effectiveType,
       deliveryCharge,
       paymentMethod: methodForChannel(payment, settings.credit.defaultTermsDays),
@@ -357,13 +409,15 @@ export default function NewOrderPage() {
                       <li className="px-3 py-4 text-center text-sm text-apptext-secondary">No active product matches “{productQuery}”.</li>
                     ) : (
                       productResults.map((i) => {
-                        const st = stockPacks(i);
+                        const st = baseStock(i);
+                        const sale = defaultSaleLevel(i);
+                        const others = sellableLevels(i).filter((u) => u.id !== sale.id);
                         return (
-                          <li key={i.id}>
+                          <li key={i.id} className="flex flex-col sm:flex-row sm:items-center">
                             <button
                               type="button"
                               onClick={() => addProduct(i)}
-                              className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition hover:bg-surface"
+                              className="flex min-w-0 flex-1 items-center justify-between gap-3 px-3 py-2.5 text-left transition hover:bg-surface"
                             >
                               <span className="min-w-0">
                                 <span className="flex flex-wrap items-center gap-1.5">
@@ -376,14 +430,29 @@ export default function NewOrderPage() {
                               </span>
                               <span className="shrink-0 text-right text-xs">
                                 <span className="block font-semibold tabular-nums text-apptext-primary">
-                                  {formatCurrency(round2(i.sellingPrice * i.unitsPerPack))}
+                                  {formatCurrency(sale.price)} <span className="font-normal text-apptext-secondary">/ {sale.name.toLowerCase()}</span>
                                 </span>
                                 <span className={cn("tabular-nums", st.free <= 0 ? "text-rose-600" : "text-apptext-secondary")}>
-                                  {st.free <= 0 ? "Out of stock" : `${packsText(st.free, i.packUnit)} free`}
+                                  {st.free <= 0 ? "Out of stock" : `${formatQty(st.free, i, "sale")} free`}
                                 </span>
                               </span>
                               <Plus className="size-4 shrink-0 text-brand-primary" aria-hidden />
                             </button>
+                            {others.length > 0 && st.free > 0 && (
+                              <span className="flex shrink-0 flex-wrap gap-1 px-3 pb-2.5 sm:pb-0 sm:pl-0">
+                                {others.map((u) => (
+                                  <button
+                                    key={u.id}
+                                    type="button"
+                                    onClick={() => addProduct(i, u.id)}
+                                    className="rounded-md border border-slate-200 px-2 py-1 text-xs font-medium text-slate-600 transition hover:border-brand-blue hover:text-brand-primary"
+                                    aria-label={`Add ${i.name} by the ${u.name.toLowerCase()}`}
+                                  >
+                                    + {u.name} · {formatCurrency(u.price)}
+                                  </button>
+                                ))}
+                              </span>
+                            )}
                           </li>
                         );
                       })
@@ -401,6 +470,7 @@ export default function NewOrderPage() {
                       key={p.draft.key}
                       p={p}
                       onPacks={(n) => patchLine(p.draft.key, { packs: n })}
+                      onUnit={(id) => changeUnit(p.draft.key, id)}
                       onDiscount={(n) => patchLine(p.draft.key, { manualDiscount: n })}
                       onRemove={() => removeLine(p.draft.key)}
                     />
@@ -710,31 +780,46 @@ function SelectedCustomer({
 interface PricedLine {
   draft: DraftLine;
   item: InventoryItem;
+  /** Unit this line is ordered in. */
+  level: UnitLevel;
+  /** The product's default sale unit (tiers count in it). */
+  sale: UnitLevel;
+  /** Units customers may order in. */
+  units: UnitLevel[];
   tier?: QuantityPricingTier;
   maxDisc: number;
   discountPct: number;
   line: ReturnType<typeof buildOrderLine>;
-  stock: { sellable: number; free: number; reserved: number };
+  stock: BaseStock;
 }
 
 function LineEditor({
   p,
   onPacks,
+  onUnit,
   onDiscount,
   onRemove,
 }: {
   p: PricedLine;
   onPacks: (n: number) => void;
+  onUnit: (levelId: string) => void;
   onDiscount: (n: number) => void;
   onRemove: () => void;
 }) {
-  const { item, line, stock, tier } = p;
-  const unit = item.packUnit;
-  const overFree = line.quantity > stock.free;
-  const overSellable = line.quantity > stock.sellable;
-  const belowMin = item.minOrderQty !== undefined && line.quantity < item.minOrderQty;
+  const { item, line, stock, tier, level, sale } = p;
+  const unit = level.name;
+  const base = item.baseUnit;
+  const lineBase = line.quantity * level.factor;
+  // Stock is shared by every line of this product, so compare the product total.
+  const overFree = stock.ordered > stock.free;
+  const overSellable = stock.ordered > stock.sellable;
+  const otherLinesBase = stock.ordered - lineBase;
+  const maxHere = Math.max(0, Math.floor((stock.sellable - otherLinesBase) / level.factor));
+  const saleEquivalent = lineBase / sale.factor;
+  const belowMin = level.id === sale.id && item.minOrderQty !== undefined && line.quantity < item.minOrderQty;
   const capped = !tier && p.draft.manualDiscount > p.maxDisc;
-  const nextTier = item.pricingTiers?.filter((t) => t.minQuantity > line.quantity).sort((a, b) => a.minQuantity - b.minQuantity)[0];
+  const totalSaleUnits = Math.floor(stock.ordered / sale.factor);
+  const nextTier = item.pricingTiers?.filter((t) => t.minQuantity > totalSaleUnits).sort((a, b) => a.minQuantity - b.minQuantity)[0];
 
   return (
     <li className="rounded-xl border border-slate-200 p-3">
@@ -757,16 +842,16 @@ function LineEditor({
         <button
           type="button"
           onClick={onRemove}
-          aria-label={`Remove ${item.name}`}
+          aria-label={`Remove ${item.name} (${unit})`}
           className="-m-1 rounded-lg p-1.5 text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"
         >
           <Trash2 className="size-4" />
         </button>
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-[auto_1fr_auto] sm:items-end">
+      <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-[auto_auto_minmax(0,1fr)_auto] sm:items-end">
         <div>
-          <span className="mb-1.5 block text-xs font-medium text-apptext-secondary">Quantity ({unit.toLowerCase()})</span>
+          <span className="mb-1.5 block text-xs font-medium text-apptext-secondary">Quantity</span>
           <div className="flex items-center">
             <button
               type="button"
@@ -781,7 +866,7 @@ function LineEditor({
               type="number"
               min={1}
               inputMode="numeric"
-              aria-label={`Quantity of ${item.name}`}
+              aria-label={`Quantity of ${item.name} in ${pluralUnit(unit, 2).toLowerCase()}`}
               className="w-16 border-y border-slate-200 px-2 py-[7px] text-center text-sm tabular-nums focus:border-brand-blue focus:outline-none focus:ring-2 focus:ring-brand-blue/20"
               value={p.draft.packs}
               onChange={(e) => onPacks(Math.max(0, Math.floor(Number(e.target.value))))}
@@ -799,13 +884,18 @@ function LineEditor({
         </div>
 
         <div>
+          <span className="mb-1.5 block text-xs font-medium text-apptext-secondary">Unit</span>
+          <UnitSelect item={item} levels={p.units} value={level.id} onChange={onUnit} ariaLabel={`Unit for ${item.name}`} className="py-[7px]" />
+        </div>
+
+        <div className="col-span-2 sm:col-span-1">
           {tier ? (
             <>
               <span className="mb-1.5 block text-xs font-medium text-apptext-secondary">Price tier</span>
               <p className="flex items-center gap-1.5 py-2 text-sm text-emerald-700">
                 <Tag className="size-3.5" aria-hidden />
                 {tier.minQuantity}
-                {tier.maxQuantity === null ? "+" : `–${tier.maxQuantity}`} {unit.toLowerCase()}: {p.discountPct}% off
+                {tier.maxQuantity === null ? "+" : `–${tier.maxQuantity}`} {pluralUnit(sale.name, 2).toLowerCase()}: {p.discountPct}% off
               </p>
             </>
           ) : (
@@ -834,26 +924,32 @@ function LineEditor({
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+        {!level.isBase && (
+          <span className="rounded-md bg-surface px-1.5 py-0.5 font-medium tabular-nums text-apptext-primary">
+            = {qtyText(lineBase, base)}
+            {level.id !== sale.id && sale.factor > 1 && ` (${Number.isInteger(saleEquivalent) ? saleEquivalent : saleEquivalent.toFixed(2)} ${sale.name.toLowerCase()})`}
+          </span>
+        )}
         <span className={cn("tabular-nums", overSellable ? "text-rose-600" : overFree ? "text-amber-700" : "text-apptext-secondary")}>
-          {stock.sellable} {unit.toLowerCase()} sellable
-          {stock.reserved > 0 && ` · ${stock.reserved} reserved by open orders`}
+          {formatQty(stock.sellable, item, "sale")} sellable
+          {stock.reserved > 0 && ` · ${formatQty(stock.reserved, item, "sale")} reserved by open orders`}
         </span>
         {overSellable ? (
           <span className="flex items-center gap-1 font-medium text-rose-600">
             <TriangleAlert className="size-3.5" aria-hidden />
-            Only {stock.sellable} in stock
+            Only {qtyText(maxHere, unit)} left for this line
           </span>
         ) : overFree ? (
           <span className="flex items-center gap-1 font-medium text-amber-700">
             <TriangleAlert className="size-3.5" aria-hidden />
-            Exceeds free stock ({stock.free})
+            Exceeds free stock ({formatQty(stock.free, item, "sale")})
           </span>
         ) : null}
         {belowMin && <span className="font-medium text-amber-700">Minimum order is {item.minOrderQty}</span>}
         {nextTier && (
           <span className="flex items-center gap-1 text-brand-primary">
             <Tag className="size-3" aria-hidden />
-            Order {nextTier.minQuantity} for {tierDiscountPct(item, nextTier)}% off
+            Order {nextTier.minQuantity} {pluralUnit(sale.name, nextTier.minQuantity).toLowerCase()} for {tierDiscountPct(item, nextTier)}% off
           </span>
         )}
       </div>

@@ -22,7 +22,8 @@ import {
   Truck,
 } from "lucide-react";
 import { Order, OrderItem, ReturnRecord, StockBatch } from "@/lib/types";
-import { ORDER_STATUS_META, PAYMENT_CHANNEL_LABEL, RETURN_SOURCE_META, RETURN_STATUS_META, acceptedQty, isClosedStatus } from "@/lib/orders";
+import { ORDER_STATUS_META, PAYMENT_CHANNEL_LABEL, RETURN_SOURCE_META, RETURN_STATUS_META, acceptedQty, isClosedStatus, lineBaseText, lineBaseUnit } from "@/lib/orders";
+import { pluralUnit as plural } from "@/lib/units";
 import { formatDateTime, formatDay } from "@/lib/inventory";
 import { useAppStore } from "@/lib/store/AppStore";
 import { useInventory } from "@/components/inventory/InventoryProvider";
@@ -239,7 +240,10 @@ export default function OrderDetailPage() {
                     <tr key={l.id} className="align-top">
                       <td className="py-3 pl-5 pr-3">
                         <p className="font-medium text-apptext-primary">{l.productName}</p>
-                        <p className="text-xs text-apptext-secondary">{l.packSizeName}</p>
+                        <p className="text-xs text-apptext-secondary">
+                          {l.packSizeName}
+                          {lineBaseText(l) && <span className="ml-1.5 tabular-nums text-apptext-primary">{lineBaseText(l)}</span>}
+                        </p>
                         <Batches line={l} order={o} batchById={batchById} allocateFefo={allocateFefo} />
                       </td>
                       <td className="px-3 py-3 text-right tabular-nums">{l.quantity}</td>
@@ -265,6 +269,7 @@ export default function OrderDetailPage() {
                       <p className="text-xs text-apptext-secondary">
                         {l.packSizeName} · <span className="tabular-nums">{l.quantity}</span> × {formatCurrency(l.unitPrice)}
                         {l.discountPct ? ` − ${l.discountPct}%` : ""}
+                        {lineBaseText(l) && <span className="block tabular-nums">{lineBaseText(l)}</span>}
                       </p>
                     </div>
                     <LineTotal line={l} />
@@ -635,7 +640,11 @@ function Batches({
       <ul className="mt-0.5 flex flex-wrap gap-1">
         {allocs.map((a) => {
           const b = batchById[a.batchId];
-          const qty = a.quantity % per === 0 ? `${a.quantity / per} ${unit.toLowerCase()}` : `${a.quantity} units`;
+          const baseName = lineBaseUnit(line) ?? "unit";
+          const qty =
+            a.quantity % per === 0
+              ? `${a.quantity / per} ${plural(unit, a.quantity / per).toLowerCase()}`
+              : `${a.quantity.toLocaleString("en-US")} ${plural(baseName, a.quantity).toLowerCase()}`;
           return (
             <li key={a.batchId} className={cn("rounded-md border px-1.5 py-0.5 text-[11px] tabular-nums", preview ? "border-dashed border-slate-300 text-slate-500" : "border-slate-200 bg-surface text-slate-600")}>
               <span className="font-mono font-medium">{b?.batchNumber ?? a.batchId}</span>

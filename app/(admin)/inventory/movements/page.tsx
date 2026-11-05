@@ -4,10 +4,11 @@ import React, { Suspense, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { ArrowDownLeft, ArrowUpRight, Download, Flame } from "lucide-react";
 import { StockMovementType } from "@/lib/types";
-import { MOVEMENT_META, formatBase, formatDateTime } from "@/lib/inventory";
+import { MOVEMENT_META, formatBase, formatDateTime, formatPacks } from "@/lib/inventory";
 import { cn, formatCurrency } from "@/lib/utils";
 import { Badge, Card, EmptyState, FilterPills, SearchInput, StatCard, btn, inputClass } from "@/components/ui";
 import { useInventory } from "@/components/inventory/InventoryProvider";
+import { ConversionLadder } from "@/components/units";
 
 type Group = "ALL" | "IN" | "OUT" | "LOSS" | "TRANSFER";
 
@@ -70,7 +71,7 @@ function MovementsView() {
   const count = (g: Group) => (g === "ALL" ? scoped.length : scoped.filter((m) => GROUPS[g].includes(m.type)).length);
 
   const exportCsv = () => {
-    const header = ["Date", "Type", "Product", "Batch", "Warehouse", "Quantity", "Unit", "Unit cost", "Value", "Reference", "By", "Note"];
+    const header = ["Date", "Type", "Product", "Batch", "Warehouse", "Quantity", "Unit", "Pack breakdown", "Unit cost", "Value", "Reference", "By", "Note"];
     const lines = rows.map((m) => {
       const item = itemById[m.itemId];
       return [
@@ -81,6 +82,7 @@ function MovementsView() {
         warehouseById[m.warehouseId].name,
         m.quantity,
         item.baseUnit,
+        formatPacks(m.quantity, item),
         m.unitCost,
         (m.quantity * m.unitCost).toFixed(2),
         m.reference,
@@ -140,6 +142,14 @@ function MovementsView() {
           </div>
         </div>
 
+        {itemId !== "ALL" && itemById[itemId] && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 bg-surface/60 px-4 py-2.5 text-xs text-apptext-secondary sm:px-5">
+            <span>Pack size</span>
+            <ConversionLadder item={itemById[itemId]} />
+            <span>· quantities are recorded in {itemById[itemId].baseUnit.toLowerCase()}s</span>
+          </div>
+        )}
+
         {rows.length === 0 ? (
           <EmptyState title="No movements" description="Nothing matches these filters." />
         ) : (
@@ -181,6 +191,9 @@ function MovementsView() {
                       >
                         {m.quantity > 0 ? "+" : "−"}
                         {formatBase(Math.abs(m.quantity), item)}
+                        {formatPacks(Math.abs(m.quantity), item) !== formatBase(Math.abs(m.quantity), item) && (
+                          <span className="block text-xs font-normal text-slate-500">{formatPacks(Math.abs(m.quantity), item)}</span>
+                        )}
                       </td>
                       <td className="whitespace-nowrap px-3 py-3 text-right tabular-nums text-apptext-primary">
                         {formatCurrency(Math.abs(m.quantity * m.unitCost))}

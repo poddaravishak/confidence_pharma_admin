@@ -21,6 +21,7 @@ import { Badge, Card, EmptyState, Field, FilterPills, Modal, SearchInput, btn, i
 import { useInventory } from "@/components/inventory/InventoryProvider";
 import { AdjustStockModal } from "@/components/inventory/AdjustStockModal";
 import { ColdChainTag, ExpiryBadge } from "@/components/inventory/shared";
+import { QtyBreakdown, UnitQty, UnitQuantityInput, unitQtyToBase } from "@/components/units";
 
 type View = "ALL" | ExpiryBucket | "ON_HOLD";
 const BUCKETS: ExpiryBucket[] = ["EXPIRED", "UNDER_30", "UNDER_60", "UNDER_90", "SAFE"];
@@ -186,11 +187,15 @@ function BatchesView() {
                       <td className="px-3 py-3 text-right tabular-nums">
                         <p className="font-semibold text-apptext-primary">{formatBase(b.availableQuantity, item)}</p>
                         <p className="text-xs text-slate-500">{formatPacks(b.availableQuantity, item)}</p>
-                        <p className="text-xs text-slate-400">{usedPct}% of {b.initialQuantity.toLocaleString("en-US")} received</p>
+                        <p className="text-xs text-slate-400">
+                          {usedPct}% of {formatBase(b.initialQuantity, item)} received
+                        </p>
                       </td>
                       <td className="px-3 py-3 text-right font-medium tabular-nums text-apptext-primary">
                         {formatCurrency(b.availableQuantity * b.unitCost)}
-                        <p className="text-xs font-normal text-slate-500">{formatCurrency(b.unitCost)} each</p>
+                        <p className="text-xs font-normal text-slate-500">
+                          {formatCurrency(b.unitCost)} / {item.baseUnit.toLowerCase()}
+                        </p>
                       </td>
                       <td className="px-3 py-3">
                         <Badge className={BATCH_STATE_META[st].badge}>{BATCH_STATE_META[st].label}</Badge>
@@ -305,7 +310,7 @@ function BatchesView() {
           onClose={() => setReturnFor(null)}
           onConfirm={(qty, note) => {
             returnToSupplier(returnFor.id, qty, note);
-            notify(`${qty.toLocaleString("en-US")} units of ${returnFor.batchNumber} returned to supplier.`);
+            notify(`${formatBase(qty, itemById[returnFor.itemId])} of ${returnFor.batchNumber} returned to supplier.`);
             setReturnFor(null);
           }}
         />
@@ -375,9 +380,10 @@ function ReturnModal({
 }) {
   const { itemById } = useInventory();
   const item = itemById[batch.itemId];
-  const [qty, setQty] = useState(String(batch.availableQuantity));
+  // Entered in any unit; returned to the supplier in base units.
+  const [qty, setQty] = useState<UnitQty>({ qty: batch.availableQuantity, levelId: "base" });
   const [note, setNote] = useState("");
-  const n = Math.floor(Number(qty) || 0);
+  const n = unitQtyToBase(item, qty);
   const valid = n > 0 && n <= batch.availableQuantity && note.trim().length >= 5;
   return (
     <Modal
@@ -401,13 +407,21 @@ function ReturnModal({
       }
     >
       <div className="space-y-4">
-        <Field
-          label={`Quantity (${item.baseUnit.toLowerCase()}s)`}
-          hint={`${formatBase(batch.availableQuantity, item)} available · value ${formatCurrency(n * batch.unitCost)}`}
-          error={n > batch.availableQuantity ? "More than available in this batch" : undefined}
-        >
-          {(id) => <input id={id} type="number" min={1} value={qty} onChange={(e) => setQty(e.target.value)} className={cn(inputClass, "tabular-nums")} />}
-        </Field>
+        <div>
+          <UnitQuantityInput
+            item={item}
+            label="Quantity"
+            value={qty}
+            onChange={setQty}
+            maxBase={batch.availableQuantity}
+            className="[&>label]:text-sm [&>label]:text-apptext-primary"
+          />
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-apptext-secondary">
+            <span>Available {formatBase(batch.availableQuantity, item)}</span>
+            <QtyBreakdown base={batch.availableQuantity} item={item} />
+            <span>· value {formatCurrency(n * batch.unitCost)}</span>
+          </div>
+        </div>
         <Field label="Reason" hint="Shown on the supplier return note (SRN).">
           {(id) => (
             <textarea

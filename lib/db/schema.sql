@@ -698,3 +698,58 @@ CREATE TABLE IF NOT EXISTS app_settings (
     updated_by UUID REFERENCES users(id),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- =====================================================================
+-- 13. Base unit + conversion model (multi pack sizes)
+-- =====================================================================
+-- Rule: stock is ONLY ever stored in the product's base unit
+-- (products.base_unit: Tablet, Capsule, Vial, Sachet, Bottle, Piece...).
+-- Every pack size is a conversion of that base unit:
+--   Tablet ×1 (base) · Strip ×10 · Box ×20 (= 2 Strips) · Carton ×1000
+-- inventory_batches.available_quantity, stock_movements.quantity, adjustments,
+-- counts, transfers and FEFO allocations are all base units. Order, purchase
+-- and return lines keep the unit they were entered in PLUS a snapshot of the
+-- conversion factor, so later edits to a pack ladder never rewrite history.
+
+ALTER TABLE product_pack_sizes ADD COLUMN IF NOT EXISTS is_base BOOLEAN DEFAULT FALSE;      -- the base unit row (multiplier 1)
+ALTER TABLE product_pack_sizes ADD COLUMN IF NOT EXISTS is_sellable BOOLEAN DEFAULT TRUE;   -- customers may order in it
+ALTER TABLE product_pack_sizes ADD COLUMN IF NOT EXISTS is_purchase_unit BOOLEAN DEFAULT FALSE; -- default PO / GRN unit
+ALTER TABLE product_pack_sizes ADD COLUMN IF NOT EXISTS barcode VARCHAR(14);
+ALTER TABLE product_pack_sizes ADD COLUMN IF NOT EXISTS display_order INT DEFAULT 0;
+
+-- Conversions are whole base units (no 2.5-tablet strips).
+ALTER TABLE product_pack_sizes ALTER COLUMN multiplier_to_base TYPE INT USING ROUND(multiplier_to_base)::INT;
+
+-- multiplier_to_base is a whole number ≥ 1, unique per product, and each
+-- level is an exact multiple of the next smaller one (validated in app).
+ALTER TABLE product_pack_sizes ADD CONSTRAINT chk_pack_multiplier CHECK (multiplier_to_base >= 1);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_pack_product_multiplier ON product_pack_sizes(product_id, multiplier_to_base);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_pack_product_default ON product_pack_sizes(product_id) WHERE is_default = TRUE;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_pack_product_purchase ON product_pack_sizes(product_id) WHERE is_purchase_unit = TRUE;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_pack_barcode ON product_pack_sizes(barcode) WHERE barcode IS NOT NULL;
+
+-- Order lines: unit ordered + factor snapshot + base quantity that left the shelf.
+ALTER TABLE order_items ADD COLUMN IF NOT EXISTS base_unit VARCHAR(30);
+ALTER TABLE order_items ADD COLUMN IF NOT EXISTS base_quantity INT
+    GENERATED ALWAYS AS (quantity * COALESCE(units_per_pack, 1)) STORED;
+
+-- Return lines are counted in the unit of the order line they came from.
+ALTER TABLE return_lines ADD COLUMN IF NOT EXISTS pack_size_id UUID REFERENCES product_pack_sizes(id);
+ALTER TABLE return_lines ADD COLUMN IF NOT EXISTS base_quantity INT
+    GENERATED ALWAYS AS (quantity * units_per_pack) STORED;
+
+-- Convenience view: every unit of every product with its stock in that unit.
+CREATE OR REPLACE VIEW v_product_unit_stock AS
+SELECT p.id                     AS product_id,
+       ps.id                    AS pack_size_id,
+       ps.pack_name_en          AS unit,
+       ps.multiplier_to_base    AS factor,
+       s.sellable_base          AS sellable_base_units,
+       FLOOR(s.sellable_base / ps.multiplier_to_base) AS whole_units_available
+FROM products p
+JOIN product_pack_sizes ps ON ps.product_id = p.id
+JOIN LATERAL (
+    SELECT COALESCE(SUM(b.available_quantity), 0) AS sellable_base
+    FROM inventory_batches b
+    WHERE b.product_id = p.id AND b.hold = 'NONE' AND b.expiry_date >= CURRENT_DATE
+) s ON TRUE;

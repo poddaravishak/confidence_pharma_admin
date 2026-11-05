@@ -2,11 +2,20 @@
 
 import React, { useMemo, useState } from "react";
 import { ArrowRight, PackageCheck, Plus, Snowflake, Trash2, Truck, Warehouse as WarehouseIcon, X } from "lucide-react";
-import { StockTransfer, StockTransferLine, TransferStatus } from "@/lib/types";
-import { TRANSFER_META, batchState, fefoSort, formatBase, formatDateTime } from "@/lib/inventory";
+import { StockTransfer, TransferStatus } from "@/lib/types";
+import { TRANSFER_META, batchState, fefoSort, formatBase, formatDateTime, formatPacks } from "@/lib/inventory";
 import { cn, formatCurrency } from "@/lib/utils";
 import { Badge, Card, CardHeader, EmptyState, Field, FilterPills, Modal, btn, inputClass } from "@/components/ui";
 import { useInventory } from "@/components/inventory/InventoryProvider";
+import { UnitQty, UnitQuantityInput, unitQtyToBase } from "@/components/units";
+
+/** A transfer line being edited: quantity in any unit, converted to base units on submit. */
+interface DraftLine {
+  key: number;
+  batchId: string;
+  qty: UnitQty;
+}
+const emptyLine = (key: number): DraftLine => ({ key, batchId: "", qty: { qty: 0, levelId: "base" } });
 
 type View = "OPEN" | "ALL" | TransferStatus;
 const STEPS: TransferStatus[] = ["REQUESTED", "IN_TRANSIT", "RECEIVED"];
@@ -203,7 +212,10 @@ function TransferRow({
               <span className="min-w-0 truncate text-apptext-primary">
                 {item?.name} <span className="font-mono text-xs text-slate-500">{b?.batchNumber}</span>
               </span>
-              <span className="whitespace-nowrap tabular-nums text-apptext-secondary">{item ? formatBase(l.quantity, item) : l.quantity}</span>
+              <span className="shrink-0 text-right tabular-nums text-apptext-secondary">
+                <span className="whitespace-nowrap">{item ? formatBase(l.quantity, item) : l.quantity}</span>
+                {item && <span className="block text-xs text-slate-400">{formatPacks(l.quantity, item)}</span>}
+              </span>
             </li>
           );
         })}
@@ -262,7 +274,7 @@ function NewTransferModal({ onClose }: { onClose: () => void }) {
   const { warehouses, batches, itemById, warehouseById, createTransfer, notify } = useInventory();
   const [from, setFrom] = useState(warehouses[0].id);
   const [to, setTo] = useState(warehouses[1].id);
-  const [lines, setLines] = useState<(StockTransferLine & { key: number })[]>([{ key: 1, batchId: "", quantity: 0 }]);
+  const [lines, setLines] = useState<DraftLine[]>([emptyLine(1)]);
   const [note, setNote] = useState("");
   const [touched, setTouched] = useState(false);
 
@@ -272,17 +284,22 @@ function NewTransferModal({ onClose }: { onClose: () => void }) {
   );
   const dest = warehouseById[to];
 
-  const lineErrors = lines.map((l) => {
+  /** Base units per line (0 until a batch is chosen). */
+  const lineBase = lines.map((l) => {
+    const b = batches.find((x) => x.id === l.batchId);
+    return b ? unitQtyToBase(itemById[b.itemId], l.qty) : 0;
+  });
+  const lineErrors = lines.map((l, idx) => {
     const b = batches.find((x) => x.id === l.batchId);
     if (!b) return "Choose a batch";
-    if (l.quantity <= 0) return "Enter a quantity";
-    if (l.quantity > b.availableQuantity) return `Only ${b.availableQuantity.toLocaleString("en-US")} available`;
+    if (lineBase[idx] <= 0) return "Enter a quantity";
+    if (lineBase[idx] > b.availableQuantity) return `Only ${formatBase(b.availableQuantity, itemById[b.itemId])} available`;
     if (itemById[b.itemId].isColdChain && !dest.hasColdRoom) return `${dest.name} has no cold room`;
     return "";
   });
   const valid = from !== to && lineErrors.every((e) => !e) && new Set(lines.map((l) => l.batchId)).size === lines.length;
 
-  const setLine = (key: number, patch: Partial<StockTransferLine>) =>
+  const setLine = (key: number, patch: Partial<DraftLine>) =>
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
 
   const submit = () => {
@@ -291,7 +308,7 @@ function NewTransferModal({ onClose }: { onClose: () => void }) {
     const id = createTransfer({
       fromWarehouseId: from,
       toWarehouseId: to,
-      lines: lines.map(({ batchId, quantity }) => ({ batchId, quantity })),
+      lines: lines.map(({ batchId }, idx) => ({ batchId, quantity: lineBase[idx] })),
       note: note.trim() || undefined,
     });
     notify(`${id} requested. Dispatch it when the stock is loaded.`);
@@ -315,7 +332,7 @@ function NewTransferModal({ onClose }: { onClose: () => void }) {
       }
     >
       <div className="space-y-4">
-        <div className="grid items-end gap-3 sm:grid-cols-[1fr_auto_1fr]">
+        <div className="grid items-end gap-3 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
           <Field label="From">
             {(id) => (
               <select
@@ -323,7 +340,7 @@ function NewTransferModal({ onClose }: { onClose: () => void }) {
                 value={from}
                 onChange={(e) => {
                   setFrom(e.target.value);
-                  setLines([{ key: Date.now(), batchId: "", quantity: 0 }]);
+                  setLines([emptyLine(Date.now())]);
                 }}
                 className={inputClass}
               >
@@ -358,53 +375,66 @@ function NewTransferModal({ onClose }: { onClose: () => void }) {
               const item = b ? itemById[b.itemId] : undefined;
               return (
                 <div key={l.key} className="rounded-lg border border-slate-200 p-2.5">
-                  <div className="flex flex-col gap-2 sm:flex-row">
+                  <div className="flex gap-2">
                     <select
                       aria-label="Batch"
                       value={l.batchId}
-                      onChange={(e) => setLine(l.key, { batchId: e.target.value })}
-                      className={cn(inputClass, "flex-1")}
+                      onChange={(e) => setLine(l.key, { batchId: e.target.value, qty: { qty: 0, levelId: "base" } })}
+                      className={cn(inputClass, "min-w-0 flex-1")}
                     >
                       <option value="">Select product batch…</option>
                       {sourceBatches.map((sb) => (
                         <option key={sb.id} value={sb.id}>
-                          {itemById[sb.itemId].name} · {sb.batchNumber} · {sb.availableQuantity.toLocaleString("en-US")} avail.
+                          {itemById[sb.itemId].name} · {sb.batchNumber} · {formatBase(sb.availableQuantity, itemById[sb.itemId])} avail.
                         </option>
                       ))}
                     </select>
-                    <div className="flex gap-2">
-                      <input
-                        type="number"
-                        min={0}
-                        aria-label="Quantity"
-                        value={l.quantity || ""}
-                        placeholder="Qty"
-                        onChange={(e) => setLine(l.key, { quantity: Math.max(0, Math.floor(Number(e.target.value) || 0)) })}
-                        className={cn(inputClass, "w-28 text-right tabular-nums")}
+                    <button
+                      aria-label="Remove line"
+                      disabled={lines.length === 1}
+                      onClick={() => setLines((ls) => ls.filter((x) => x.key !== l.key))}
+                      className="shrink-0 rounded-lg border border-slate-200 px-2.5 text-slate-500 hover:bg-slate-50 disabled:opacity-40"
+                    >
+                      <Trash2 className="size-4" />
+                    </button>
+                  </div>
+                  {item && b && (
+                    <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,16rem)_minmax(0,1fr)] sm:items-start">
+                      <UnitQuantityInput
+                        item={item}
+                        value={l.qty}
+                        onChange={(qty) => setLine(l.key, { qty })}
+                        maxBase={b.availableQuantity}
+                        invalid={touched && Boolean(lineErrors[idx])}
                       />
-                      <button
-                        aria-label="Remove line"
-                        disabled={lines.length === 1}
-                        onClick={() => setLines((ls) => ls.filter((x) => x.key !== l.key))}
-                        className="rounded-lg border border-slate-200 px-2.5 text-slate-500 hover:bg-slate-50 disabled:opacity-40"
-                      >
-                        <Trash2 className="size-4" />
-                      </button>
+                      <div className="min-w-0 text-xs text-apptext-secondary sm:pt-2.5">
+                        <p>
+                          Available <span className="font-medium tabular-nums text-apptext-primary">{formatBase(b.availableQuantity, item)}</span>
+                          {" · "}
+                          <button
+                            type="button"
+                            className="font-medium text-brand-primary hover:underline"
+                            onClick={() => setLine(l.key, { qty: { qty: b.availableQuantity, levelId: "base" } })}
+                          >
+                            Move all
+                          </button>
+                        </p>
+                        {lineBase[idx] > 0 && (
+                          <p className="mt-0.5 tabular-nums">
+                            Moving {formatPacks(lineBase[idx], item)} · {formatCurrency(lineBase[idx] * b.unitCost)}
+                          </p>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                  <div className="mt-1 flex justify-between gap-2 text-xs">
-                    <span className="text-apptext-secondary">
-                      {item && b ? `${formatBase(l.quantity, item)} · ${formatCurrency(l.quantity * b.unitCost)}` : ""}
-                    </span>
-                    {touched && lineErrors[idx] && <span className="text-rose-600">{lineErrors[idx]}</span>}
-                  </div>
+                  )}
+                  {touched && lineErrors[idx] && <p className="mt-1 text-xs text-rose-600">{lineErrors[idx]}</p>}
                 </div>
               );
             })}
           </div>
           <button
             className={cn(btn.ghost, "mt-2")}
-            onClick={() => setLines((ls) => [...ls, { key: Date.now(), batchId: "", quantity: 0 }])}
+            onClick={() => setLines((ls) => [...ls, emptyLine(Date.now())])}
           >
             <Plus className="size-4" aria-hidden />
             Add item

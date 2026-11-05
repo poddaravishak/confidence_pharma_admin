@@ -25,7 +25,6 @@ import {
   fefoSort,
   formatBase,
   formatPacks,
-  packLabel,
 } from "@/lib/inventory";
 import { cn, formatCurrency } from "@/lib/utils";
 import { Badge, Card, EmptyState, FilterPills, SearchInput, StatCard, btn, inputClass } from "@/components/ui";
@@ -39,6 +38,7 @@ import {
   StockLevelBar,
   StockStatusBadge,
 } from "@/components/inventory/shared";
+import { ConversionLadder } from "@/components/units";
 
 type Filter = "ALL" | "LOW" | "OUT" | "EXPIRING" | "COLD";
 type Sort = "name" | "value" | "cover" | "expiry";
@@ -346,10 +346,10 @@ export default function InventoryOverviewPage() {
                           <p className="font-semibold tabular-nums text-apptext-primary">{formatBase(s.sellable, item)}</p>
                           <p className="mb-1.5 text-xs text-apptext-secondary">{formatPacks(s.sellable, item)}</p>
                           <StockLevelBar stock={s} item={item} />
-                          <p className="mt-1 text-xs text-slate-500">Reorder at {item.reorderLevel.toLocaleString("en-US")}</p>
+                          <p className="mt-1 text-xs text-slate-500">Reorder at {formatBase(item.reorderLevel, item)}</p>
                           {(s.onHold > 0 || s.expired > 0) && (
                             <p className="mt-0.5 text-xs text-violet-700">
-                              + {(s.onHold + s.expired).toLocaleString("en-US")} blocked
+                              + {formatBase(s.onHold + s.expired, item)} blocked
                             </p>
                           )}
                         </td>
@@ -437,7 +437,7 @@ export default function InventoryOverviewPage() {
                                             <ExpiryBadge date={b.expiryDate} />
                                           </td>
                                           <td className="px-3 py-2 text-right tabular-nums">
-                                            <span className="font-medium text-apptext-primary">{b.availableQuantity.toLocaleString("en-US")}</span>
+                                            <span className="font-medium text-apptext-primary">{formatBase(b.availableQuantity, item)}</span>
                                             <span className="block text-xs text-slate-500">{formatPacks(b.availableQuantity, item)}</span>
                                           </td>
                                           <td className="px-3 py-2">
@@ -458,14 +458,22 @@ export default function InventoryOverviewPage() {
                                 </table>
                               </div>
 
-                              <dl className="space-y-2 rounded-lg border border-slate-200 bg-white p-3 text-sm">
+                              <dl className="min-w-0 space-y-2 rounded-lg border border-slate-200 bg-white p-3 text-sm">
+                                <div>
+                                  <dt className="mb-1 text-apptext-secondary">Pack size</dt>
+                                  <dd>
+                                    <ConversionLadder item={item} />
+                                  </dd>
+                                </div>
                                 {[
-                                  ["Pack size", packLabel(item)],
                                   ["Reorder level", formatBase(item.reorderLevel, item)],
                                   ["Supplier", supplierById[item.supplierId]?.name ?? "—"],
                                   ["Lead time", `${item.leadTimeDays} days`],
                                   ["Storage", item.storageCondition],
-                                  ["Cost / sell", `${formatCurrency(item.costPrice)} / ${formatCurrency(item.sellingPrice)}`],
+                                  [
+                                    "Cost / sell",
+                                    `${formatCurrency(item.costPrice)} / ${formatCurrency(item.sellingPrice)} per ${item.baseUnit.toLowerCase()}`,
+                                  ],
                                 ].map(([k, v]) => (
                                   <div key={k} className="flex justify-between gap-3">
                                     <dt className="text-apptext-secondary">{k}</dt>

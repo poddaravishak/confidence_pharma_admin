@@ -816,7 +816,7 @@ function PacksSection({ draft, set, x, errorFor, units }: SectionProps & { units
   const addLevel = () => {
     const used = new Set([draft.baseUnit, ...draft.packs.map((p) => p.name)]);
     const name = ["Strip", "Box", "Carton"].find((n) => !used.has(n)) ?? "";
-    set({ packs: [...draft.packs, { key: newKey(), name, perParent: name === "Carton" ? "20" : "10", barcode: "" }] });
+    set({ packs: [...draft.packs, { key: newKey(), name, perParent: name === "Carton" ? "20" : "10", barcode: "", sellable: name !== "Carton" }] });
   };
   const removeLevel = (key: string) => {
     const idx = draft.packs.findIndex((p) => p.key === key);
@@ -825,6 +825,7 @@ function PacksSection({ draft, set, x, errorFor, units }: SectionProps & { units
     set({
       packs,
       defaultPackKey: draft.defaultPackKey === key ? fallback : draft.defaultPackKey,
+      purchasePackKey: draft.purchasePackKey === key ? fallback : draft.purchasePackKey,
       openingLevelKey: draft.openingLevelKey === key ? fallback : draft.openingLevelKey,
     });
   };
@@ -837,7 +838,7 @@ function PacksSection({ draft, set, x, errorFor, units }: SectionProps & { units
       step={2}
       icon={Layers}
       title="Units & pack hierarchy"
-      description="Stock is counted in the base unit. Each pack level contains a whole number of the level below it."
+      description="Stock is always counted in the base unit. Every pack size is a conversion of it: each level holds a whole number of the level below."
       actions={
         <button type="button" onClick={addLevel} disabled={draft.packs.length >= 4} className={btn.small}>
           <Plus className="size-3.5" aria-hidden />
@@ -846,7 +847,7 @@ function PacksSection({ draft, set, x, errorFor, units }: SectionProps & { units
       }
     >
       <div className="overflow-x-auto rounded-lg border border-slate-200">
-        <table className="w-full min-w-[640px] text-left text-sm">
+        <table className="w-full min-w-[820px] text-left text-sm">
           <thead className="bg-surface text-xs font-medium text-apptext-secondary">
             <tr>
               <th className="px-3 py-2">Level</th>
@@ -854,7 +855,9 @@ function PacksSection({ draft, set, x, errorFor, units }: SectionProps & { units
               <th className="px-3 py-2">Contains</th>
               <th className="px-3 py-2 text-right">= Base units</th>
               <th className="px-3 py-2">Barcode</th>
-              <th className="px-3 py-2 text-center">Default selling pack</th>
+              <th className="px-3 py-2 text-center">Sellable</th>
+              <th className="px-3 py-2 text-center">Default sale unit</th>
+              <th className="px-3 py-2 text-center">Purchase unit</th>
               <th className="px-3 py-2">
                 <span className="sr-only">Remove</span>
               </th>
@@ -880,11 +883,31 @@ function PacksSection({ draft, set, x, errorFor, units }: SectionProps & { units
               <td className="px-3 py-2.5 text-xs text-apptext-secondary">Set in basic information</td>
               <td className="px-3 py-2.5 text-center">
                 <input
+                  type="checkbox"
+                  aria-label={`Customers can order loose ${plural(draft.baseUnit, 2).toLowerCase()}`}
+                  checked={draft.baseSellable || draft.defaultPackKey === "base"}
+                  disabled={draft.defaultPackKey === "base"}
+                  onChange={(e) => set({ baseSellable: e.target.checked })}
+                  className="size-4 accent-brand-primary"
+                />
+              </td>
+              <td className="px-3 py-2.5 text-center">
+                <input
                   type="radio"
                   name="default-pack"
                   aria-label={`Sell per ${draft.baseUnit}`}
                   checked={draft.defaultPackKey === "base"}
-                  onChange={() => set({ defaultPackKey: "base" })}
+                  onChange={() => set({ defaultPackKey: "base", baseSellable: true })}
+                  className="size-4 accent-brand-primary"
+                />
+              </td>
+              <td className="px-3 py-2.5 text-center">
+                <input
+                  type="radio"
+                  name="purchase-pack"
+                  aria-label={`Buy per ${draft.baseUnit}`}
+                  checked={draft.purchasePackKey === "base"}
+                  onChange={() => set({ purchasePackKey: "base" })}
                   className="size-4 accent-brand-primary"
                 />
               </td>
@@ -947,11 +970,31 @@ function PacksSection({ draft, set, x, errorFor, units }: SectionProps & { units
                   </td>
                   <td className="px-3 py-2.5 text-center">
                     <input
+                      type="checkbox"
+                      aria-label={`Customers can order by the ${(p.name || "pack").toLowerCase()}`}
+                      checked={p.sellable || draft.defaultPackKey === p.key}
+                      disabled={draft.defaultPackKey === p.key}
+                      onChange={(e) => updatePack(p.key, { sellable: e.target.checked })}
+                      className="size-4 accent-brand-primary"
+                    />
+                  </td>
+                  <td className="px-3 py-2.5 text-center">
+                    <input
                       type="radio"
                       name="default-pack"
                       aria-label={`Sell per ${p.name || "pack"}`}
                       checked={draft.defaultPackKey === p.key}
-                      onChange={() => set({ defaultPackKey: p.key })}
+                      onChange={() => set({ defaultPackKey: p.key, packs: draft.packs.map((q) => (q.key === p.key ? { ...q, sellable: true } : q)) })}
+                      className="size-4 accent-brand-primary"
+                    />
+                  </td>
+                  <td className="px-3 py-2.5 text-center">
+                    <input
+                      type="radio"
+                      name="purchase-pack"
+                      aria-label={`Buy per ${p.name || "pack"}`}
+                      checked={draft.purchasePackKey === p.key}
+                      onChange={() => set({ purchasePackKey: p.key })}
                       className="size-4 accent-brand-primary"
                     />
                   </td>
@@ -972,6 +1015,14 @@ function PacksSection({ draft, set, x, errorFor, units }: SectionProps & { units
         </table>
       </div>
 
+      {["defaultPack", "purchasePack"].map((f) => {
+        const msg = errorFor(f);
+        return msg ? (
+          <p key={f} className="text-xs text-rose-600">
+            {msg}
+          </p>
+        ) : null;
+      })}
       {draft.packs.map((p) =>
         ["name", "perParent", "barcode"].map((f) => {
           const msg = errorFor(`pack.${p.key}.${f}`);
@@ -989,7 +1040,7 @@ function PacksSection({ draft, set, x, errorFor, units }: SectionProps & { units
           <p className="font-semibold tabular-nums text-apptext-primary">{hierarchyText(x.levels)}</p>
         </div>
         <div className="text-sm sm:text-right">
-          <p className="text-xs font-medium text-apptext-secondary">Default selling pack</p>
+          <p className="text-xs font-medium text-apptext-secondary">Default sale unit</p>
           <p className="font-semibold text-brand-primary">
             1 {x.defaultLevel.name}
             {x.mult > 1 && (
@@ -1002,8 +1053,9 @@ function PacksSection({ draft, set, x, errorFor, units }: SectionProps & { units
         </div>
       </div>
       <p className="text-xs text-apptext-secondary">
-        Orders, stock levels and reorder suggestions use the default selling pack. Prices below are entered per base unit and multiplied
-        up for every pack.
+        Stock, batches, counts and FEFO picking always run in {plural(x.levels[0].name, 2).toLowerCase()}. Orders can be taken in any
+        sellable unit (default: {x.defaultLevel.name.toLowerCase()}); purchase orders and goods receiving use the purchase unit. Prices
+        below are entered per base unit and multiplied up for every pack.
       </p>
     </FormSection>
   );

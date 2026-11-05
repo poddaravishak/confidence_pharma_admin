@@ -8,7 +8,7 @@ import {
   ReturnSource,
   ReturnStatus,
 } from "@/lib/types";
-import { plural } from "@/lib/inventory";
+import { UnitLevel, defaultSaleLevel, findLevel, pluralUnit as plural } from "@/lib/units";
 
 /* ------------------------------------------------------------------ */
 /* Status metadata                                                     */
@@ -83,33 +83,69 @@ export const PAYMENT_CHANNEL_LABEL: Record<PaymentChannel, string> = {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
-export function packLabel(item: Pick<InventoryItem, "packUnit" | "unitsPerPack" | "baseUnit">): string {
-  if (item.unitsPerPack <= 1) return `1 ${item.packUnit}`;
-  return `1 ${item.packUnit} (${item.unitsPerPack} ${plural(item.baseUnit, item.unitsPerPack)})`;
+/** "1 Box (240 Tablets)" for a unit level, "1 Tablet" for the base unit. */
+export function unitLineLabel(level: Pick<UnitLevel, "name" | "factor">, baseUnit: string): string {
+  if (level.factor <= 1) return `1 ${level.name}`;
+  return `1 ${level.name} (${level.factor.toLocaleString("en-US")} ${plural(baseUnit, level.factor)})`;
 }
 
-/** Build an order line priced from the inventory item (pack price = unit price × units per pack). */
+/** Label of the item's default sale unit. */
+export function packLabel(item: InventoryItem): string {
+  return unitLineLabel(defaultSaleLevel(item), item.baseUnit);
+}
+
+/**
+ * Build an order line in any unit of the item's ladder (default: its default
+ * sale unit). Price comes from that unit; stock moves in base units via
+ * `unitsPerPack` (the conversion factor) and `baseQuantity`.
+ */
 export function buildOrderLine(
   id: string,
   item: InventoryItem,
-  packs: number,
+  qty: number,
   discountPct = 0,
-  unitPriceOverride?: number
+  unitPriceOverride?: number,
+  levelId?: string
 ): OrderItem {
-  const unitPrice = unitPriceOverride ?? round2(item.sellingPrice * item.unitsPerPack);
+  const level = (levelId && findLevel(item, { id: levelId })) || defaultSaleLevel(item);
+  const unitPrice = unitPriceOverride ?? level.price;
   return {
     id,
     productId: item.id,
     productName: item.name,
-    packSizeName: packLabel(item),
-    quantity: packs,
+    packSizeName: unitLineLabel(level, item.baseUnit),
+    packSizeId: level.id,
+    quantity: qty,
     unitPrice,
     discountPct,
-    lineTotal: round2(unitPrice * packs * (1 - discountPct / 100)),
-    cogsCost: round2(item.costPrice * item.unitsPerPack * packs),
-    unitsPerPack: item.unitsPerPack,
+    lineTotal: round2(unitPrice * qty * (1 - discountPct / 100)),
+    cogsCost: round2(item.costPrice * level.factor * qty),
+    unitsPerPack: level.factor,
+    baseQuantity: level.factor * qty,
+    baseUnit: item.baseUnit,
   };
 }
+
+/** Base unit name of a line ("Tablet"), read from the line or its "1 Box (240 Tablets)" label. */
+export function lineBaseUnit(line: OrderItem): string | null {
+  if (line.baseUnit) return line.baseUnit;
+  const m = /\(([\d,]+)\s+([^)]+)\)/.exec(line.packSizeName);
+  if (!m) return null;
+  const word = m[2].trim();
+  return word.replace(/(ches|shes|xes|ses)$/i, (x) => x.slice(0, -2)).replace(/s$/i, "");
+}
+
+/** "= 60 Tablets" for a line ordered in a pack, null for base-unit lines. */
+export function lineBaseText(line: OrderItem, qty = line.quantity): string | null {
+  const per = Math.max(1, line.unitsPerPack ?? 1);
+  const unit = lineBaseUnit(line);
+  if (per <= 1 || !unit) return null;
+  const n = qty * per;
+  return `= ${n.toLocaleString("en-US")} ${plural(unit, n)}`;
+}
+
+/** Base units a line takes off the shelf. */
+export const lineBaseQty = (line: OrderItem, qty = line.quantity) => qty * Math.max(1, line.unitsPerPack ?? 1);
 
 /** Net price of one pack after the line discount. */
 export const netPackPrice = (line: OrderItem) => round2(line.unitPrice * (1 - line.discountPct / 100));

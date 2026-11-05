@@ -11,6 +11,8 @@ import { Badge, btn } from "@/components/ui";
 import { mapsUrl, whatsappUrl } from "@/components/delivery/shared";
 import { DeliveryOutcomeForm, OutcomeKind } from "@/components/delivery/DeliveryOutcomeForm";
 import { useRider } from "@/components/rider/RiderShell";
+import { packUnitOf } from "@/components/orders/shared";
+import { qtyText } from "@/lib/units";
 
 export default function RiderStopPage({ params }: { params: Promise<{ orderId: string }> }) {
   const { orderId } = use(params);
@@ -61,7 +63,7 @@ export default function RiderStopPage({ params }: { params: Promise<{ orderId: s
             <ul className="mt-2 space-y-1 text-sm text-amber-900">
               {result.ret.lines.map((l) => (
                 <li key={l.orderItemId}>
-                  <span className="font-semibold tabular-nums">{l.quantity}</span> × {l.productName} · {RETURN_REASON_META[l.reason].label}
+                  <span className="font-semibold tabular-nums">{qtyText(l.quantity, packUnitOf(l))}</span> {l.productName} · {RETURN_REASON_META[l.reason].label}
                 </li>
               ))}
             </ul>

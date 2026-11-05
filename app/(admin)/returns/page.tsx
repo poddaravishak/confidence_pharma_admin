@@ -11,6 +11,8 @@ import { RETURN_REASON_META, RETURN_SOURCE_META, RETURN_STATUS_META } from "@/li
 import { useAppStore } from "@/lib/store/AppStore";
 import { Badge, btn, Card, EmptyState, FilterPills, PageHeader, SearchInput, StatCard, Tabs } from "@/components/ui";
 import { CreditNoteModal, NewRmaModal } from "@/components/returns/ReturnForms";
+import { packUnitOf } from "@/components/orders/shared";
+import { qtyText } from "@/lib/units";
 
 type View = "returns" | "credit";
 type Filter = "ALL" | "IN_TRANSIT" | "RECEIVED" | "RMA" | "COMPLETED" | "REJECTED";
@@ -182,7 +184,7 @@ export default function ReturnsPage() {
                         <td className="px-3 py-3 align-top">
                           {r.lines.map((l) => (
                             <p key={l.orderItemId} className="text-apptext-primary">
-                              <span className="font-semibold tabular-nums">{l.quantity}</span> × {l.productName}
+                              <span className="font-semibold tabular-nums">{qtyText(l.quantity, packUnitOf(l))}</span> {l.productName}
                               <span className="block text-xs text-apptext-secondary">{RETURN_REASON_META[l.reason].label}</span>
                             </p>
                           ))}
@@ -211,7 +213,7 @@ export default function ReturnsPage() {
                         <Badge className={RETURN_STATUS_META[r.status].badge}>{RETURN_STATUS_META[r.status].label}</Badge>
                       </div>
                       <p className="text-sm font-medium text-apptext-primary">{r.customerName}</p>
-                      <p className="text-xs text-apptext-secondary">{r.lines.map((l) => `${l.quantity} × ${l.productName}`).join(", ")}</p>
+                      <p className="text-xs text-apptext-secondary">{r.lines.map((l) => `${qtyText(l.quantity, packUnitOf(l))} ${l.productName}`).join(", ")}</p>
                       <p className="text-sm font-semibold tabular-nums">{formatCurrency(r.totalValue)}</p>
                     </Link>
                   </li>

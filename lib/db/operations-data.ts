@@ -25,6 +25,7 @@ import {
 } from "@/lib/types";
 import { mockAuditLogs, mockCustomers, mockDeliveryPersonnel, mockOrders } from "@/lib/db/mock-data";
 import { inventoryItems, stockBatches } from "@/lib/db/inventory-data";
+import { withCatalogDefaults } from "@/lib/db/catalog-data";
 import { buildOrderLine, netPackPrice, orderTotals, ORDER_STATUS_META, RETURN_REASON_META } from "@/lib/orders";
 
 export const OPS_TODAY = "2026-11-05";
@@ -55,7 +56,7 @@ const riderById = Object.fromEntries(demoRiders.map((r) => [r.id, r]));
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
-const itemById = Object.fromEntries(inventoryItems.map((i) => [i.id, i]));
+const itemById = Object.fromEntries(inventoryItems.map((i) => [i.id, withCatalogDefaults(i)]));
 const customerById: Record<string, Customer> = Object.fromEntries(mockCustomers.map((c) => [c.id, c]));
 
 /** FEFO pick from the central warehouse (seed only, does not change stock). */
@@ -75,7 +76,8 @@ function fefo(itemId: string, baseQty: number, pool: StockBatch[] = stockBatches
   return out;
 }
 
-type LineSpec = [productId: string, packs: number, discountPct?: number];
+/** [product, quantity, discount %, unit (PackSize id, default = the default sale unit)] */
+type LineSpec = [productId: string, qty: number, discountPct?: number, levelId?: string];
 
 const at = (day: string, time: string) => `${day}T${time}:00+06:00`;
 
@@ -106,10 +108,10 @@ function makeOrder(spec: {
   notes?: string;
 }): Order {
   const c = customerById[spec.customerId];
-  const items: OrderItem[] = spec.lines.map(([pid, packs, disc = 0], i) => {
-    const line = buildOrderLine(`${spec.id}-l${i + 1}`, itemById[pid], packs, disc);
+  const items: OrderItem[] = spec.lines.map(([pid, qty, disc = 0, levelId], i) => {
+    const line = buildOrderLine(`${spec.id}-l${i + 1}`, itemById[pid], qty, disc, undefined, levelId);
     const dispatched = ["DISPATCHED", "OUT_FOR_DELIVERY", "DELIVERED", "PARTIALLY_DELIVERED", "FAILED_DELIVERY"].includes(spec.status);
-    return dispatched ? { ...line, batchAllocations: fefo(pid, packs * itemById[pid].unitsPerPack) } : line;
+    return dispatched ? { ...line, batchAllocations: fefo(pid, line.baseQuantity ?? qty) } : line;
   });
   const totals = orderTotals(items, spec.deliveryCharge ?? 0);
   const steps = spec.steps ?? {};
@@ -355,7 +357,8 @@ const ord106 = makeOrder({
   number: "CP-ORD-202611-0106",
   customerId: "cust-08",
   status: "PACKED",
-  lines: [["prod-06", 8, 2], ["prod-01", 4]],
+  // Napa in two units: 4 Boxes + 6 loose Strips (same stock, different conversions)
+  lines: [["prod-06", 8, 2], ["prod-01", 4], ["prod-01", 6, 0, "pk-strip"]],
   created: at(T, "09:45"),
   steps: { CONFIRMED: at(T, "09:50"), PROCESSING: at(T, "10:05"), PACKED: at(T, "10:40") },
 });
@@ -365,7 +368,8 @@ const ord107 = makeOrder({
   number: "CP-ORD-202611-0107",
   customerId: "cust-06",
   status: "PLACED",
-  lines: [["prod-11", 5], ["prod-09", 6]],
+  // Ciprocin by the box and by the strip (1 Box = 2 Strips = 20 Tablets), ORS by the box
+  lines: [["prod-11", 5], ["prod-09", 6], ["prod-16", 3], ["prod-16", 1, 0, "pk-strip"], ["prod-15", 20]],
   created: at(T, "11:20"),
   notes: "Customer asked for long-expiry Azithrocin only.",
 });

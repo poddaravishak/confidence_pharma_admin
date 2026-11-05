@@ -2,11 +2,12 @@
 
 import React, { useMemo, useState } from "react";
 import { CheckCircle2, ClipboardCheck, ClipboardList, Eye, EyeOff, Plus, Wand2 } from "lucide-react";
-import { StockCount } from "@/lib/types";
-import { formatDateTime, formatPacks, plural } from "@/lib/inventory";
+import { InventoryItem, StockBatch, StockCount, StockCountLine } from "@/lib/types";
+import { formatBase, formatDateTime, plural } from "@/lib/inventory";
 import { cn, formatCurrency } from "@/lib/utils";
 import { Badge, Card, CardHeader, EmptyState, Field, Modal, btn, inputClass } from "@/components/ui";
 import { useInventory } from "@/components/inventory/InventoryProvider";
+import { LevelCounts, PackCounter, QtyBreakdown, countsFromBase } from "@/components/units";
 
 function useCountSummary(count: StockCount | undefined) {
   const { batchById } = useInventory();
@@ -179,80 +180,27 @@ function CountDetail({ count }: { count: StockCount }) {
         </div>
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[600px] text-left text-sm">
-          <thead className="bg-surface text-xs font-medium text-apptext-secondary">
-            <tr>
-              <th className="px-4 py-2.5">Product · batch</th>
-              <th className="px-3 py-2.5">Rack</th>
-              {!blind && <th className="px-3 py-2.5 text-right">System</th>}
-              <th className="px-3 py-2.5 text-right">Counted</th>
-              {!blind && <th className="px-4 py-2.5 text-right">Variance</th>}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {count.lines.map((l) => {
-              const batch = batchById[l.batchId];
-              const item = itemById[batch.itemId];
-              const diff = l.countedQuantity === null ? null : l.countedQuantity - l.systemQuantity;
-              return (
-                <tr key={l.batchId} className={cn(diff !== null && diff !== 0 && !blind && "bg-amber-50/40")}>
-                  <td className="px-4 py-2.5">
-                    <p className="font-medium text-apptext-primary">{item.name}</p>
-                    <p className="font-mono text-xs text-slate-500">{batch.batchNumber}</p>
-                  </td>
-                  <td className="px-3 py-2.5 font-mono text-xs text-apptext-secondary">{batch.location}</td>
-                  {!blind && (
-                    <td className="px-3 py-2.5 text-right tabular-nums text-apptext-secondary">
-                      {l.systemQuantity.toLocaleString("en-US")}
-                      <span className="block text-xs">{formatPacks(l.systemQuantity, item)}</span>
-                    </td>
-                  )}
-                  <td className="px-3 py-2.5 text-right">
-                    {done ? (
-                      <span className="font-medium tabular-nums">{l.countedQuantity?.toLocaleString("en-US") ?? "—"}</span>
-                    ) : (
-                      <input
-                        type="number"
-                        min={0}
-                        inputMode="numeric"
-                        aria-label={`Counted quantity for ${item.name} ${batch.batchNumber}`}
-                        value={l.countedQuantity ?? ""}
-                        onChange={(e) =>
-                          setCountedQuantity(count.id, l.batchId, e.target.value === "" ? null : Math.max(0, Math.floor(Number(e.target.value))))
-                        }
-                        placeholder="—"
-                        className={cn(inputClass, "ml-auto w-28 text-right tabular-nums")}
-                      />
-                    )}
-                    <span className="mt-0.5 block text-xs text-slate-400">{item.baseUnit.toLowerCase()}s</span>
-                  </td>
-                  {!blind && (
-                    <td className="px-4 py-2.5 text-right tabular-nums">
-                      {diff === null ? (
-                        <span className="text-slate-400">Not counted</span>
-                      ) : diff === 0 ? (
-                        <span className="inline-flex items-center gap-1 text-emerald-700">
-                          <CheckCircle2 className="size-4" aria-hidden />
-                          Match
-                        </span>
-                      ) : (
-                        <span className={cn("font-semibold", diff < 0 ? "text-rose-700" : "text-emerald-700")}>
-                          {diff > 0 ? "+" : "−"}
-                          {Math.abs(diff).toLocaleString("en-US")}
-                          <span className="block text-xs font-normal">
-                            {formatCurrency(Math.abs(diff * batch.unitCost))}
-                          </span>
-                        </span>
-                      )}
-                    </td>
-                  )}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      <div className="hidden grid-cols-[minmax(0,1fr)_minmax(0,11rem)_minmax(0,9rem)] gap-4 bg-surface px-4 py-2.5 text-xs font-medium text-apptext-secondary sm:grid sm:px-5">
+        <span>Product · batch · rack</span>
+        {!blind && <span className="text-right">System</span>}
+        {!blind && <span className="text-right">Variance</span>}
       </div>
+      <ul className="divide-y divide-slate-100">
+        {count.lines.map((l) => {
+          const batch = batchById[l.batchId];
+          return (
+            <CountLineRow
+              key={l.batchId}
+              line={l}
+              batch={batch}
+              item={itemById[batch.itemId]}
+              blind={blind}
+              done={done}
+              onCount={(value) => setCountedQuantity(count.id, l.batchId, value)}
+            />
+          );
+        })}
+      </ul>
 
       {!done && (
         <div className="flex flex-col gap-2 border-t border-slate-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
@@ -321,6 +269,120 @@ function CountDetail({ count }: { count: StockCount }) {
         </Modal>
       )}
     </Card>
+  );
+}
+
+/**
+ * One batch in a count. Staff count what is physically on the shelf in every
+ * unit (cartons, boxes, loose strips, loose tablets); the total is saved in
+ * base units.
+ */
+function CountLineRow({
+  line,
+  batch,
+  item,
+  blind,
+  done,
+  onCount,
+}: {
+  line: StockCountLine;
+  batch: StockBatch;
+  item: InventoryItem;
+  blind: boolean;
+  done: boolean;
+  onCount: (base: number | null) => void;
+}) {
+  // Local per-unit counts keep what the user typed (e.g. 2 Boxes + 15 Strips)
+  // instead of re-splitting the base total on every keystroke.
+  const [typed, setTyped] = useState<LevelCounts | null>(null);
+  const counts = typed ?? (line.countedQuantity === null ? {} : countsFromBase(item, line.countedQuantity));
+  const diff = line.countedQuantity === null ? null : line.countedQuantity - line.systemQuantity;
+  const flagged = diff !== null && diff !== 0 && !blind;
+
+  return (
+    <li className={cn("px-4 py-3 sm:px-5", flagged && "bg-amber-50/40")}>
+      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,11rem)_minmax(0,9rem)] sm:gap-4">
+        <div className="min-w-0">
+          <p className="font-medium text-apptext-primary">{item.name}</p>
+          <p className="font-mono text-xs text-slate-500">
+            {batch.batchNumber} · {batch.location}
+          </p>
+        </div>
+        {!blind && (
+          <div className="min-w-0 sm:text-right">
+            <p className="text-xs text-apptext-secondary sm:hidden">System</p>
+            <p className="text-sm font-medium tabular-nums text-apptext-primary">{formatBase(line.systemQuantity, item)}</p>
+            <QtyBreakdown base={line.systemQuantity} item={item} className="mt-1 sm:justify-end" />
+          </div>
+        )}
+        {!blind && (
+          <div className="min-w-0 tabular-nums sm:text-right">
+            <p className="text-xs text-apptext-secondary sm:hidden">Variance</p>
+            {diff === null ? (
+              <span className="text-sm text-slate-400">Not counted</span>
+            ) : diff === 0 ? (
+              <span className="inline-flex items-center gap-1 text-sm text-emerald-700">
+                <CheckCircle2 className="size-4" aria-hidden />
+                Match
+              </span>
+            ) : (
+              <div className={cn("text-sm font-semibold", diff < 0 ? "text-rose-700" : "text-emerald-700")}>
+                {diff > 0 ? "+" : "−"}
+                {formatBase(Math.abs(diff), item)}
+                <QtyBreakdown base={Math.abs(diff)} item={item} className="mt-1 font-normal sm:justify-end" />
+                <span className="mt-0.5 block text-xs font-normal">{formatCurrency(Math.abs(diff * batch.unitCost))}</span>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="mt-3">
+        {done ? (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="text-xs text-apptext-secondary">Counted</span>
+            {line.countedQuantity === null ? (
+              <span className="text-slate-400">—</span>
+            ) : (
+              <>
+                <span className="font-medium tabular-nums text-apptext-primary">{formatBase(line.countedQuantity, item)}</span>
+                <QtyBreakdown base={line.countedQuantity} item={item} />
+              </>
+            )}
+          </div>
+        ) : (
+          <div className="rounded-lg border border-slate-200 bg-white p-2.5">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <span className="text-xs font-medium text-apptext-primary">
+                Counted on shelf
+                {line.countedQuantity === null && <span className="font-normal text-slate-400"> · not counted yet</span>}
+              </span>
+              {line.countedQuantity !== null && (
+                <button
+                  type="button"
+                  className="text-xs font-medium text-brand-primary hover:underline"
+                  onClick={() => {
+                    setTyped(null);
+                    onCount(null);
+                  }}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            <PackCounter
+              item={item}
+              counts={counts}
+              compact
+              onChange={(next, base) => {
+                setTyped(next);
+                onCount(base);
+              }}
+            />
+          </div>
+        )}
+      </div>
+    </li>
   );
 }
 

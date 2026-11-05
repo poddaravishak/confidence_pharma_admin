@@ -96,6 +96,7 @@ export const catalogCategories: Category[] = [
       sub("sub-0105", "Respiratory", "শ্বাসতন্ত্র"),
       sub("sub-0106", "Diabetes", "ডায়াবেটিস"),
       sub("sub-0107", "Cardiovascular", "হৃদরোগ"),
+      sub("sub-0108", "Rehydration", "পানিশূন্যতা"),
     ],
   },
   {
@@ -307,10 +308,25 @@ export function ean13(body12: string): string {
 
 type Level = [name: string, multiplier: number];
 
-/** Build PackSize rows; prices are per base unit × multiplier. */
-function packs(levels: Level[], defaultName: string, mrp: number, sell: number): PackSize[] {
+interface PackOpts {
+  /** Customers may also order loose base units (default true). */
+  baseSellable?: boolean;
+  /** Pack levels that can't be ordered (purchase-only, e.g. Carton). */
+  notSellable?: string[];
+  /** Default purchase / receiving unit (default: the largest level). */
+  purchase?: string;
+  /** 6-digit product code used to derive one EAN-13 per pack level. */
+  code?: string;
+}
+
+/**
+ * Build PackSize rows from a base-unit ladder. Each level is a conversion of
+ * the base unit (multiplier = base units per pack); prices are per base unit
+ * × multiplier.
+ */
+function packs(levels: Level[], defaultName: string, mrp: number, sell: number, opts: PackOpts = {}): PackSize[] {
   const bn = Object.fromEntries(catalogUnits.map((u) => [u.name, u.nameBn]));
-  return levels.map(([name, m]) => ({
+  const rows: PackSize[] = levels.map(([name, m], i) => ({
     id: `pk-${name.toLowerCase()}`,
     packNameEn: name,
     packNameBn: bn[name] ?? name,
@@ -318,7 +334,23 @@ function packs(levels: Level[], defaultName: string, mrp: number, sell: number):
     packMrp: Math.round(mrp * m * 100) / 100,
     packSellingPrice: Math.round(sell * m * 100) / 100,
     isDefault: name === defaultName,
+    isSellable: !opts.notSellable?.includes(name),
+    isPurchaseUnit: opts.purchase ? name === opts.purchase : i === levels.length - 1,
+    barcode: opts.code ? ean13(`21${opts.code}${String(i + 1).padStart(4, "0")}`) : undefined,
   }));
+  if (opts.baseSellable === false) {
+    rows.unshift({
+      id: "pk-base",
+      packNameEn: "",
+      packNameBn: "",
+      multiplierToBase: 1,
+      packMrp: mrp,
+      packSellingPrice: sell,
+      isDefault: false,
+      isSellable: false,
+    });
+  }
+  return rows;
 }
 
 const tiers = (packPrice: number, steps: [min: number, max: number | null, pct: number][]): QuantityPricingTier[] =>
@@ -341,7 +373,7 @@ export const SEED_PRODUCT_EXTRAS: Record<string, Partial<InventoryItem>> = {
     dgdaRegNo: "037-0412-001",
     barcode: ean13("200000000101"),
     isPrescriptionRequired: false,
-    packSizes: packs([["Strip", 12], ["Box", 240]], "Box", 3, 2.5),
+    packSizes: packs([["Strip", 12], ["Box", 240]], "Box", 3, 2.5, { baseSellable: false, code: "000101" }),
     pricingTiers: tiers(600, [[1, 9, 0], [10, 49, 5], [50, null, 10]]),
     vatPct: 0,
     maxDiscountPct: 10,
@@ -362,7 +394,7 @@ export const SEED_PRODUCT_EXTRAS: Record<string, Partial<InventoryItem>> = {
     dgdaRegNo: "032-0187-022",
     barcode: ean13("200000000202"),
     isPrescriptionRequired: true,
-    packSizes: packs([["Strip", 10], ["Box", 100]], "Box", 6, 4.8),
+    packSizes: packs([["Strip", 10], ["Box", 100]], "Box", 6, 4.8, { baseSellable: false, code: "000202" }),
     pricingTiers: tiers(480, [[1, 9, 0], [10, 49, 5], [50, null, 10]]),
     vatPct: 0,
     maxDiscountPct: 10,
@@ -381,7 +413,7 @@ export const SEED_PRODUCT_EXTRAS: Record<string, Partial<InventoryItem>> = {
     dgdaRegNo: "041-0233-104",
     barcode: ean13("200000000303"),
     isPrescriptionRequired: true,
-    packSizes: packs([["Strip", 10], ["Box", 30]], "Box", 17.5, 15),
+    packSizes: packs([["Strip", 10], ["Box", 30]], "Box", 17.5, 15, { code: "000303" }),
     pricingTiers: tiers(450, [[1, 9, 0], [10, 29, 6], [30, null, 12]]),
     vatPct: 0,
     maxDiscountPct: 12,
@@ -397,7 +429,7 @@ export const SEED_PRODUCT_EXTRAS: Record<string, Partial<InventoryItem>> = {
     strength: "Size M",
     dosageForm: "Surgical",
     barcode: ean13("200000000404"),
-    packSizes: packs([["Carton", 10]], "Carton", 550, 450),
+    packSizes: packs([["Carton", 10]], "Carton", 550, 450, { code: "000404" }),
     vatPct: 5,
     maxDiscountPct: 8,
     minOrderQty: 1,
@@ -515,7 +547,7 @@ export const SEED_PRODUCT_EXTRAS: Record<string, Partial<InventoryItem>> = {
     strength: "3ml, 23G",
     dosageForm: "Surgical",
     barcode: ean13("200000001203"),
-    packSizes: packs([["Box", 100], ["Carton", 1000]], "Box", 7, 5.5),
+    packSizes: packs([["Box", 100], ["Carton", 1000]], "Box", 7, 5.5, { notSellable: ["Carton"], code: "001201" }),
     vatPct: 5,
     maxDiscountPct: 8,
     visibleTo: ALL_TYPES,
@@ -537,6 +569,48 @@ export const SEED_PRODUCT_EXTRAS: Record<string, Partial<InventoryItem>> = {
     visibleTo: NO_RETAIL_SURGICAL,
     status: "ACTIVE",
     createdAt: "2025-05-05T09:00:00Z",
+  },
+  "prod-15": {
+    nameBn: "ওরাল স্যালাইন (ওআরএস)",
+    subcategory: "Rehydration",
+    strength: "10.25g",
+    dosageForm: "Powder (sachet)",
+    dgdaRegNo: "009-0311-045",
+    barcode: ean13("200000001501"),
+    isPrescriptionRequired: false,
+    // 1 Box = 25 Sachets · 1 Carton = 20 Boxes = 500 Sachets
+    packSizes: packs([["Box", 25], ["Carton", 500]], "Box", 7, 6, { notSellable: ["Carton"], purchase: "Carton", code: "001501" }),
+    pricingTiers: tiers(150, [[1, 19, 0], [20, 99, 4], [100, null, 8]]),
+    vatPct: 0,
+    maxDiscountPct: 8,
+    minOrderQty: 1,
+    visibleTo: ALL_TYPES,
+    defaultWarehouseId: "wh-01",
+    defaultLocation: "A-07-01",
+    minStockLevel: 2500,
+    maxStockLevel: 20000,
+    status: "ACTIVE",
+    createdAt: "2026-05-04T09:00:00Z",
+  },
+  "prod-16": {
+    nameBn: "সিপ্রোসিন ৫০০ মি.গ্রা.",
+    subcategory: "Antibiotics",
+    strength: "500mg",
+    dosageForm: "Tablet",
+    dgdaRegNo: "032-0118-209",
+    barcode: ean13("200000001601"),
+    isPrescriptionRequired: true,
+    // 1 Strip = 10 Tablets · 1 Box = 2 Strips · 1 Carton = 50 Boxes
+    packSizes: packs([["Strip", 10], ["Box", 20], ["Carton", 1000]], "Box", 15, 14, { notSellable: ["Carton"], code: "001601" }),
+    pricingTiers: tiers(280, [[1, 9, 0], [10, 49, 4], [50, null, 8]]),
+    vatPct: 0,
+    maxDiscountPct: 8,
+    minOrderQty: 1,
+    visibleTo: NO_RETAIL_SURGICAL,
+    defaultWarehouseId: "wh-01",
+    defaultLocation: "A-05-03",
+    status: "ACTIVE",
+    createdAt: "2026-06-12T09:00:00Z",
   },
   "prod-14": {
     nameBn: "অ্যাকু-চেক অ্যাকটিভ স্ট্রিপ (৫০)",

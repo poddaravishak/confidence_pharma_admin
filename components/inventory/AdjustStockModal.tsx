@@ -4,9 +4,10 @@ import React, { useMemo, useState } from "react";
 import { AlertTriangle, ArrowRight, Minus, Plus, ShieldCheck } from "lucide-react";
 import { AdjustmentReason } from "@/lib/types";
 import { APPROVAL_THRESHOLD } from "@/lib/db/inventory-data";
-import { REASON_META, daysUntil, fefoSort, formatBase, formatPacks, plural } from "@/lib/inventory";
+import { REASON_META, daysUntil, fefoSort, formatBase } from "@/lib/inventory";
 import { cn, formatCurrency } from "@/lib/utils";
 import { Field, Modal, btn, inputClass } from "@/components/ui";
+import { QtyBreakdown, UnitQty, UnitQuantityInput, unitQtyToBase } from "@/components/units";
 import { useInventory } from "./InventoryProvider";
 
 const REASONS = Object.keys(REASON_META) as AdjustmentReason[];
@@ -35,8 +36,8 @@ export function AdjustStockModal({
   const [direction, setDirection] = useState<"in" | "out">(
     initialDirection ?? (REASON_META[initialReason].direction === "in" ? "in" : "out")
   );
-  const [unit, setUnit] = useState<"base" | "pack">("base");
-  const [qtyInput, setQtyInput] = useState(initialQuantity ? String(initialQuantity) : "");
+  /** Entered quantity in any unit of the item; converted to base units before saving. */
+  const [qtyValue, setQtyValue] = useState<UnitQty>({ qty: initialQuantity ?? 0, levelId: "base" });
   const [note, setNote] = useState("");
   const [touched, setTouched] = useState(false);
 
@@ -48,8 +49,7 @@ export function AdjustStockModal({
   const batch = batchId ? batchById[batchId] : undefined;
 
   const effectiveDirection = REASON_META[reason].direction === "both" ? direction : REASON_META[reason].direction;
-  const qty = Math.max(0, Math.floor(Number(qtyInput) || 0));
-  const baseQty = item && unit === "pack" ? qty * item.unitsPerPack : qty;
+  const baseQty = item ? unitQtyToBase(item, qtyValue) : 0;
   const delta = effectiveDirection === "in" ? baseQty : -baseQty;
   const newQty = batch ? Math.max(0, batch.availableQuantity + delta) : 0;
   const realDelta = batch ? newQty - batch.availableQuantity : 0;
@@ -60,7 +60,12 @@ export function AdjustStockModal({
   const errors = {
     item: !itemId ? "Choose a product" : "",
     batch: !batchId ? "Choose a batch" : "",
-    qty: qty <= 0 ? "Enter a quantity greater than 0" : exceeds ? `Only ${batch!.availableQuantity} in this batch` : "",
+    qty:
+      baseQty <= 0
+        ? "Enter a quantity greater than 0"
+        : exceeds && item
+          ? `Only ${formatBase(batch!.availableQuantity, item)} in this batch`
+          : "",
     note: note.trim().length < 5 ? "Add a short reason (at least 5 characters)" : "",
   };
   const valid = !errors.item && !errors.batch && !errors.qty && !errors.note;
@@ -69,10 +74,7 @@ export function AdjustStockModal({
     setReason(r);
     const d = REASON_META[r].direction;
     if (d !== "both") setDirection(d);
-    if (r === "EXPIRED_DISPOSAL" && batch) {
-      setUnit("base");
-      setQtyInput(String(batch.availableQuantity));
-    }
+    if (r === "EXPIRED_DISPOSAL" && batch) setQtyValue({ qty: batch.availableQuantity, levelId: "base" });
   };
 
   const submit = () => {
@@ -117,6 +119,7 @@ export function AdjustStockModal({
                 onChange={(e) => {
                   setItemId(e.target.value);
                   setBatchId("");
+                  setQtyValue((v) => ({ ...v, levelId: "base" }));
                 }}
                 className={inputClass}
               >
@@ -145,7 +148,7 @@ export function AdjustStockModal({
                 <option value="">{item ? "Select batch…" : "Choose a product first"}</option>
                 {itemBatches.map((b) => (
                   <option key={b.id} value={b.id}>
-                    {b.batchNumber} · {warehouseById[b.warehouseId].code} · {b.availableQuantity.toLocaleString("en-US")} ·
+                    {b.batchNumber} · {warehouseById[b.warehouseId].code} · {formatBase(b.availableQuantity, item!)} ·
                     exp {b.expiryDate}
                     {daysUntil(b.expiryDate) < 0 ? " (expired)" : ""}
                   </option>
@@ -176,7 +179,7 @@ export function AdjustStockModal({
         </fieldset>
 
         {/* Quantity */}
-        <div className="grid gap-4 sm:grid-cols-[auto_1fr]">
+        <div className="grid gap-4 sm:grid-cols-[auto_minmax(0,1fr)]">
           <div>
             <p className="mb-1.5 text-sm font-medium text-apptext-primary">Direction</p>
             <div className="flex rounded-lg border border-slate-200 p-0.5">
@@ -201,38 +204,23 @@ export function AdjustStockModal({
               })}
             </div>
           </div>
-          <Field label="Quantity" error={touched ? errors.qty : undefined}>
-            {(id) => (
-              <div className="flex gap-2">
-                <input
-                  id={id}
-                  type="number"
-                  min={0}
-                  inputMode="numeric"
-                  value={qtyInput}
-                  onChange={(e) => setQtyInput(e.target.value)}
-                  placeholder="0"
-                  className={cn(inputClass, "tabular-nums")}
+          <Field
+            label="Quantity"
+            error={touched ? errors.qty : undefined}
+          >
+            {(id) =>
+              item ? (
+                <UnitQuantityInput
+                  item={item}
+                  value={qtyValue}
+                  onChange={setQtyValue}
+                  invalid={touched && Boolean(errors.qty)}
+                  maxBase={batch && effectiveDirection === "out" ? batch.availableQuantity : undefined}
                 />
-                {item && item.unitsPerPack > 1 && item.packUnit !== item.baseUnit ? (
-                  <select
-                    aria-label="Unit"
-                    value={unit}
-                    onChange={(e) => setUnit(e.target.value as "base" | "pack")}
-                    className={cn(inputClass, "w-auto")}
-                  >
-                    <option value="base">{plural(item.baseUnit, 2)}</option>
-                    <option value="pack">
-                      {plural(item.packUnit, 2)} ({item.unitsPerPack})
-                    </option>
-                  </select>
-                ) : (
-                  <span className="flex items-center px-1 text-sm text-apptext-secondary">
-                    {item ? plural(item.baseUnit, 2) : "units"}
-                  </span>
-                )}
-              </div>
-            )}
+              ) : (
+                <input id={id} type="number" disabled placeholder="Choose a product first" className={cn(inputClass, "tabular-nums")} />
+              )
+            }
           </Field>
         </div>
 
@@ -250,18 +238,26 @@ export function AdjustStockModal({
         </Field>
 
         {/* Summary */}
-        {batch && item && qty > 0 && (
+        {batch && item && baseQty > 0 && (
           <div className="rounded-xl bg-surface p-4">
             <div className="flex flex-wrap items-center gap-3 text-sm">
               <div>
                 <p className="text-xs text-apptext-secondary">Current</p>
                 <p className="font-semibold tabular-nums text-apptext-primary">{formatBase(batch.availableQuantity, item)}</p>
+                <QtyBreakdown base={batch.availableQuantity} item={item} className="mt-1" />
               </div>
               <ArrowRight className="size-4 text-slate-400" aria-hidden />
               <div>
                 <p className="text-xs text-apptext-secondary">After</p>
                 <p className="font-semibold tabular-nums text-apptext-primary">{formatBase(newQty, item)}</p>
-                <p className="text-xs text-apptext-secondary">{formatPacks(newQty, item)}</p>
+                <QtyBreakdown base={newQty} item={item} className="mt-1" />
+              </div>
+              <div>
+                <p className="text-xs text-apptext-secondary">Change</p>
+                <p className={cn("font-semibold tabular-nums", realDelta < 0 ? "text-rose-700" : "text-emerald-700")}>
+                  {realDelta < 0 ? "−" : "+"}
+                  {formatBase(Math.abs(realDelta), item)}
+                </p>
               </div>
               <div className="ml-auto text-right">
                 <p className="text-xs text-apptext-secondary">Cost impact</p>

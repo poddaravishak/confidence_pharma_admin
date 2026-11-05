@@ -62,7 +62,8 @@ const SESSION_KEY = "cp-demo-session";
 
 export interface CreateOrderInput {
   customerId: string;
-  lines: { productId: string; packs: number; discountPct?: number }[];
+  /** `packs` is the quantity in `levelId` (a unit of the product's ladder; default = its default sale unit). */
+  lines: { productId: string; packs: number; discountPct?: number; levelId?: string }[];
   deliveryType: NonNullable<Order["deliveryType"]>;
   deliveryCharge: number;
   paymentMethod: string;
@@ -323,7 +324,9 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
     const n = settings.invoice.nextNumber;
     setSettings((s) => ({ ...s, invoice: { ...s.invoice, nextNumber: s.invoice.nextNumber + 1 } }));
     const id = `ord-${n}`;
-    const items = input.lines.map((l, i) => buildOrderLine(`${id}-l${i + 1}`, inventory.itemById[l.productId], l.packs, l.discountPct ?? 0));
+    const items = input.lines.map((l, i) =>
+      buildOrderLine(`${id}-l${i + 1}`, inventory.itemById[l.productId], l.packs, l.discountPct ?? 0, undefined, l.levelId)
+    );
     const totals = orderTotals(items, input.deliveryCharge);
     const status: OrderStatus = input.confirm ? "CONFIRMED" : "PLACED";
     const order: Order = {
@@ -415,11 +418,14 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
 
     // FEFO-pick every line and take the stock out of the warehouse.
     const allocated: Record<string, Order> = {};
+    // Base units already picked per batch in this run, so lines of the same
+    // product in different units (Boxes + Strips) never double-book a batch.
+    const taken: Record<string, number> = {};
     for (const o of picked) {
       const items = o.items.map((l) => {
         if (l.batchAllocations?.length) return l;
         const units = l.unitsPerPack ?? inventory.itemById[l.productId]?.unitsPerPack ?? 1;
-        const alloc = inventory.allocateFefo(l.productId, l.quantity * units);
+        const alloc = inventory.allocateFefo(l.productId, l.quantity * units, undefined, taken);
         inventory.issueStock(alloc, o.orderNumber, `Dispatched on ${run.runNumber}`);
         return { ...l, unitsPerPack: units, batchAllocations: alloc };
       });

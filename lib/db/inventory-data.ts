@@ -424,6 +424,50 @@ export const inventoryItems: InventoryItem[] = [
     storageCondition: "4–30°C, keep dry",
     isActive: true,
   },
+  {
+    id: "prod-15",
+    sku: "ACI-ORS-SACHET",
+    name: "Oral Saline (ORS) Sachet",
+    genericName: "Oral Rehydration Salts",
+    brand: "ACI",
+    category: "Allopathic",
+    medicineType: "Powder (sachet)",
+    baseUnit: "Sachet",
+    packUnit: "Box",
+    unitsPerPack: 25,
+    costPrice: 5.2,
+    sellingPrice: 6,
+    mrp: 7,
+    reorderLevel: 2500,
+    avgDailySales: 420,
+    leadTimeDays: 3,
+    supplierId: "sup-02",
+    isColdChain: false,
+    storageCondition: "Below 30°C, dry place",
+    isActive: true,
+  },
+  {
+    id: "prod-16",
+    sku: "SQ-CIPRO-500",
+    name: "Ciprocin 500mg Tablet",
+    genericName: "Ciprofloxacin",
+    brand: "Square Pharmaceuticals",
+    category: "Allopathic",
+    medicineType: "Tablet",
+    baseUnit: "Tablet",
+    packUnit: "Box",
+    unitsPerPack: 20,
+    costPrice: 12,
+    sellingPrice: 14,
+    mrp: 15,
+    reorderLevel: 400,
+    avgDailySales: 60,
+    leadTimeDays: 2,
+    supplierId: "sup-02",
+    isColdChain: false,
+    storageCondition: "Below 30°C",
+    isActive: true,
+  },
 ];
 
 const b = (
@@ -498,6 +542,10 @@ export const stockBatches: StockBatch[] = [
   }),
   // Accu-Chek
   b("bt-024", "prod-14", "wh-01", "RC-ACK-2504", "D-01-01", "2025-04-01", "2027-04-01", "2026-06-25", 80, 52, 950, { purchaseRef: "PUR-2606-014" }),
+  // ORS — received in cartons (1 Carton = 20 Boxes = 500 Sachets), sold by the box
+  b("bt-025", "prod-15", "wh-01", "ACI-ORS-2508", "A-07-01", "2025-08-01", "2027-07-31", "2026-08-12", 10000, 6237, 5.2, { purchaseRef: "PUR-2608-018" }),
+  // Ciprocin — 1 Strip = 10 Tablets, 1 Box = 2 Strips, 1 Carton = 50 Boxes
+  b("bt-026", "prod-16", "wh-01", "SQ-CIP-2506", "A-05-03", "2025-06-15", "2027-06-14", "2026-09-02", 2000, 1234, 12, { purchaseRef: "PUR-2609-002" }),
 ];
 
 let mv = 0;
@@ -551,6 +599,10 @@ export const stockMovements: StockMovement[] = [
   m("2026-08-05T09:45:00+06:00", "prod-10", "bt-017", "wh-01", "PURCHASE_IN", 800, 72, "PUR-2608-003", STAFF.inventoryManager),
   m("2026-07-20T14:15:00+06:00", "prod-07", "bt-012", "wh-01", "PURCHASE_IN", 200, 150, "PUR-2607-012", STAFF.inventoryManager),
   m("2026-07-01T10:00:00+06:00", "prod-11", "bt-020", "wh-01", "PURCHASE_IN", 1500, 32, "PUR-2607-001", STAFF.inventoryManager),
+  m("2026-08-12T11:20:00+06:00", "prod-15", "bt-025", "wh-01", "PURCHASE_IN", 10000, 5.2, "PUR-2608-018", STAFF.inventoryManager, "20 Cartons × 500 Sachets"),
+  m("2026-09-02T10:05:00+06:00", "prod-16", "bt-026", "wh-01", "PURCHASE_IN", 2000, 12, "PUR-2609-002", STAFF.inventoryManager, "2 Cartons × 1,000 Tablets"),
+  m("2026-11-03T15:30:00+06:00", "prod-16", "bt-026", "wh-01", "SALE_OUT", -6, 12, "CP-ORD-202611-0090", STAFF.storeKeeper, "Sold loose: 6 Tablets"),
+  m("2026-11-04T10:10:00+06:00", "prod-15", "bt-025", "wh-01", "SALE_OUT", -750, 5.2, "CP-ORD-202611-0091", STAFF.storeKeeper, "30 Boxes"),
 ];
 
 export const stockAdjustments: StockAdjustment[] = [

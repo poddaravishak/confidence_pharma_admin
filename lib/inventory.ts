@@ -7,6 +7,7 @@ import {
   TransferStatus,
 } from "@/lib/types";
 import { DEMO_TODAY } from "@/lib/db/inventory-data";
+import { conversionChain, defaultPurchaseLevel, formatQty, pluralUnit } from "@/lib/units";
 
 /* ------------------------------------------------------------------ */
 /* Dates                                                               */
@@ -42,36 +43,24 @@ export function formatDateTime(iso: string): string {
 /* Quantities                                                          */
 /* ------------------------------------------------------------------ */
 
-export function plural(word: string, n: number): string {
-  if (n === 1) return word;
-  if (/(x|s|ch|sh)$/i.test(word)) return `${word}es`;
-  return `${word}s`;
-}
+export const plural = pluralUnit;
 
-/** "25 Boxes + 40 Tablets" — pack breakdown of a base-unit quantity. */
+/**
+ * "12 Boxes + 1 Strip + 4 Tablets" — a base-unit quantity split across the
+ * item's whole unit ladder (see lib/units.ts).
+ */
 export function formatPacks(qty: number, item: InventoryItem): string {
-  if (item.unitsPerPack <= 1 || item.packUnit === item.baseUnit) {
-    return `${qty.toLocaleString("en-US")} ${plural(item.baseUnit, qty)}`;
-  }
-  const sign = qty < 0 ? "−" : "";
-  const abs = Math.abs(qty);
-  const packs = Math.floor(abs / item.unitsPerPack);
-  const rest = abs % item.unitsPerPack;
-  const parts: string[] = [];
-  if (packs) parts.push(`${packs.toLocaleString("en-US")} ${plural(item.packUnit, packs)}`);
-  if (rest || !packs) parts.push(`${rest.toLocaleString("en-US")} ${plural(item.baseUnit, rest)}`);
-  return sign + parts.join(" + ");
+  return formatQty(qty, item, "breakdown");
 }
 
 /** "9,600 Tablets" */
 export function formatBase(qty: number, item: InventoryItem): string {
-  return `${qty.toLocaleString("en-US")} ${plural(item.baseUnit, Math.abs(qty))}`;
+  return formatQty(qty, item, "base");
 }
 
+/** "1 Box = 2 Strips = 20 Tablets" */
 export function packLabel(item: InventoryItem): string {
-  return item.unitsPerPack > 1 && item.packUnit !== item.baseUnit
-    ? `1 ${item.packUnit} = ${item.unitsPerPack} ${plural(item.baseUnit, item.unitsPerPack)}`
-    : `Sold per ${item.baseUnit.toLowerCase()}`;
+  return conversionChain(item);
 }
 
 /* ------------------------------------------------------------------ */
@@ -173,11 +162,15 @@ export function computeItemStock(item: InventoryItem, batches: StockBatch[]): It
   return { onHand, sellable, onHold, expired, value, batchCount, nearestExpiryDays: nearest, status, daysOfCover };
 }
 
-/** Packs to order so stock covers lead time + 30 days, and at least 2× reorder level. */
-export function suggestedReorderPacks(item: InventoryItem, sellable: number): number {
+/** Base units needed so stock covers lead time + 30 days, and at least 2× reorder level. */
+export function reorderNeedBase(item: InventoryItem, sellable: number): number {
   const target = Math.max(item.avgDailySales * (item.leadTimeDays + 30), item.reorderLevel * 2);
-  const need = Math.max(0, target - sellable);
-  return Math.ceil(need / Math.max(1, item.unitsPerPack));
+  return Math.max(0, target - sellable);
+}
+
+/** Packs of the item's purchase unit to order (rounded up to whole packs). */
+export function suggestedReorderPacks(item: InventoryItem, sellable: number): number {
+  return Math.ceil(reorderNeedBase(item, sellable) / defaultPurchaseLevel(item).factor);
 }
 
 /** FEFO: sellable batches, earliest expiry first. */
