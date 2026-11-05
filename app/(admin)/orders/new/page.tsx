@@ -23,6 +23,7 @@ import { buildOrderLine, isClosedStatus, orderTotals } from "@/lib/orders";
 import { packLabel } from "@/lib/inventory";
 import { UnitLevel, defaultSaleLevel, formatQty, pluralUnit, qtyText, sellableLevels, unitLevels } from "@/lib/units";
 import { UnitSelect } from "@/components/units";
+import { TierQuote, quoteTier, tierRangeLabel, tierTable } from "@/lib/pricing";
 import { mockDeliveryZoneRules } from "@/lib/db/mock-data";
 import { useAppStore } from "@/lib/store/AppStore";
 import { useInventory } from "@/components/inventory/InventoryProvider";
@@ -72,23 +73,6 @@ function customerBlock(c: Customer): string | null {
   if (c.verificationStatus === "REJECTED") return "KYC was rejected. The customer must resubmit documents before ordering.";
   if (c.verificationStatus !== "APPROVED" && !c.isExceptionApproval) return "KYC isn't approved yet. Approve the customer in Customers & KYC first.";
   return null;
-}
-
-/**
- * Quantity tiers are defined in the default sale unit (e.g. Boxes). Lines in
- * other units count by their base-unit equivalent, so 4 Strips of a
- * 2-strip box count as 2 Boxes towards the tier.
- */
-function tierFor(item: InventoryItem, saleUnits: number): QuantityPricingTier | undefined {
-  return item.pricingTiers?.find((t) => saleUnits >= t.minQuantity && (t.maxQuantity === null || saleUnits <= t.maxQuantity));
-}
-
-/** Tier discount as a % of the default pack price (tiers may give a % or only a reduced pack price). */
-function tierDiscountPct(item: InventoryItem, t: QuantityPricingTier): number {
-  if (t.discountPct > 0) return t.discountPct;
-  const packPrice = defaultSaleLevel(item).price;
-  if (t.unitPrice > 0 && t.unitPrice < packPrice) return round2((1 - t.unitPrice / packPrice) * 100);
-  return 0;
 }
 
 const isSellable = (i: InventoryItem) => i.isActive && (i.status === undefined || i.status === "ACTIVE");
@@ -169,6 +153,19 @@ export default function NewOrderPage() {
     return m;
   }, [lines, itemById]);
 
+  /** Base units per product of the lines priced by the product tiers. */
+  const inheritBase = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const l of lines) {
+      const item = itemById[l.productId];
+      if (!item) continue;
+      const level = unitLevels(item).find((u) => u.id === l.levelId) ?? defaultSaleLevel(item);
+      if (tierTable(item, level).countUnit.id !== defaultSaleLevel(item).id) continue;
+      m[l.productId] = (m[l.productId] ?? 0) + Math.max(0, Math.floor(l.packs || 0)) * level.factor;
+    }
+    return m;
+  }, [lines, itemById]);
+
   const baseStock = (item: InventoryItem): BaseStock => {
     const sellable = stockByItem[item.id]?.sellable ?? 0;
     const res = reserved[item.id] ?? 0;
@@ -226,12 +223,15 @@ export default function NewOrderPage() {
       const levels = unitLevels(item);
       const level = levels.find((u) => u.id === l.levelId) ?? defaultSaleLevel(item);
       const sale = defaultSaleLevel(item);
-      // Tier on the product's total across lines, counted in the default sale unit.
-      const tier = tierFor(item, Math.floor((orderedBase[item.id] ?? 0) / sale.factor));
+      const qty = Math.max(1, Math.floor(l.packs || 0));
+      // Own pack tiers count this unit; otherwise the product tiers count every
+      // inheriting line of the product in the default unit (lib/pricing.ts).
+      const quote = quoteTier(item, level, qty, inheritBase[item.id] ?? 0);
+      const tier = quote.tier;
       const maxDisc = item.maxDiscountPct ?? DEFAULT_MAX_DISCOUNT;
-      const discountPct = tier ? tierDiscountPct(item, tier) : Math.min(Math.max(0, l.manualDiscount || 0), maxDisc);
-      const line = buildOrderLine(l.key, item, Math.max(1, Math.floor(l.packs || 0)), discountPct, undefined, level.id);
-      return { draft: l, item, level, sale, units: sellableLevels(item), tier, maxDisc, discountPct, line, stock: baseStock(item) };
+      const discountPct = tier ? quote.discountPct : Math.min(Math.max(0, l.manualDiscount || 0), maxDisc);
+      const line = buildOrderLine(l.key, item, qty, discountPct, undefined, level.id);
+      return { draft: l, item, level, sale, units: sellableLevels(item), quote, tier, maxDisc, discountPct, line, stock: baseStock(item) };
     });
 
   const requiresCold = priced.some((p) => p.item.isColdChain);
@@ -786,6 +786,7 @@ interface PricedLine {
   sale: UnitLevel;
   /** Units customers may order in. */
   units: UnitLevel[];
+  quote: TierQuote;
   tier?: QuantityPricingTier;
   maxDisc: number;
   discountPct: number;
@@ -818,8 +819,9 @@ function LineEditor({
   const saleEquivalent = lineBase / sale.factor;
   const belowMin = level.id === sale.id && item.minOrderQty !== undefined && line.quantity < item.minOrderQty;
   const capped = !tier && p.draft.manualDiscount > p.maxDisc;
-  const totalSaleUnits = Math.floor(stock.ordered / sale.factor);
-  const nextTier = item.pricingTiers?.filter((t) => t.minQuantity > totalSaleUnits).sort((a, b) => a.minQuantity - b.minQuantity)[0];
+  const { table, next } = p.quote;
+  const countName = table.countUnit.name;
+  const ownPackTiers = table.countUnit.id === level.id && level.id !== sale.id;
 
   return (
     <li className="rounded-xl border border-slate-200 p-3">
@@ -891,11 +893,15 @@ function LineEditor({
         <div className="col-span-2 sm:col-span-1">
           {tier ? (
             <>
-              <span className="mb-1.5 block text-xs font-medium text-apptext-secondary">Price tier</span>
+              <span className="mb-1.5 block text-xs font-medium text-apptext-secondary">
+                {ownPackTiers ? `${unit} price tier` : level.id === sale.id ? "Price tier" : `${sale.name} tier (by ${base.toLowerCase()}s)`}
+              </span>
               <p className="flex items-center gap-1.5 py-2 text-sm text-emerald-700">
-                <Tag className="size-3.5" aria-hidden />
-                {tier.minQuantity}
-                {tier.maxQuantity === null ? "+" : `–${tier.maxQuantity}`} {pluralUnit(sale.name, 2).toLowerCase()}: {p.discountPct}% off
+                <Tag className="size-3.5 shrink-0" aria-hidden />
+                <span>
+                  {tierRangeLabel(tier, countName).toLowerCase()}: {p.discountPct > 0 ? `${p.discountPct}% off` : "list price"}
+                  <span className="text-apptext-secondary"> · {formatCurrency(round2(line.unitPrice * (1 - p.discountPct / 100)))}/{unit.toLowerCase()}</span>
+                </span>
               </p>
             </>
           ) : (
@@ -946,10 +952,11 @@ function LineEditor({
           </span>
         ) : null}
         {belowMin && <span className="font-medium text-amber-700">Minimum order is {item.minOrderQty}</span>}
-        {nextTier && (
+        {next && (
           <span className="flex items-center gap-1 text-brand-primary">
             <Tag className="size-3" aria-hidden />
-            Order {nextTier.minQuantity} {pluralUnit(sale.name, nextTier.minQuantity).toLowerCase()} for {tierDiscountPct(item, nextTier)}% off
+            Add {qtyText(next.more, countName).toLowerCase()} for {next.discountPct}% off
+            {!ownPackTiers && level.id !== sale.id && ` (${table.countUnit.name.toLowerCase()} tiers)`}
           </span>
         )}
       </div>

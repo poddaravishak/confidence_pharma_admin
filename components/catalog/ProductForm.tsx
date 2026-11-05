@@ -58,6 +58,7 @@ import {
   num,
   packBarcodeMap,
   suggestSupplier,
+  suggestedTiers,
   validate,
 } from "./product-draft";
 
@@ -1200,26 +1201,28 @@ function Metric({ label, value, tone, hint }: { label: string; value: string; to
 /* ------------------------------------------------------------------ */
 
 function TiersSection({ draft, set, x, errorFor, full }: SectionProps) {
-  const pack = x.defaultLevel.name;
-  const packs = plural(pack, 2).toLowerCase();
-  const sorted = [...x.tierRows].filter((t) => Number.isFinite(t.min)).sort((a, b) => a.min - b.min);
+  const base = x.levels[0];
+  // Units customers can order in: default first, then the others smallest first.
+  const sellableKeys = new Set([...(draft.baseSellable ? ["base"] : []), ...draft.packs.filter((p) => p.sellable).map((p) => p.key), x.defaultLevel.key]);
+  const units = [x.defaultLevel, ...x.levels.filter((l) => l.key !== x.defaultLevel.key && sellableKeys.has(l.key))];
+  const [tab, setTab] = useState(x.defaultLevel.key);
+  const active = units.find((u) => u.key === tab) ?? units[0];
+  const isDefault = active.key === x.defaultLevel.key;
+  const own = isDefault || draft.levelTiers[active.key] !== undefined;
   const liveErrors = full.errors.filter((e) => e.section === "tiers");
 
-  const addTier = () => {
-    const last = sorted[sorted.length - 1];
-    const min = last ? (last.max === null ? "" : String(last.max + 1)) : "1";
-    set({ tiers: [...draft.tiers, { key: newKey(), min, max: "", mode: "DISCOUNT", value: "" }] });
+  const tiers = isDefault ? draft.tiers : draft.levelTiers[active.key] ?? [];
+  const rows = isDefault ? x.tierRows : x.levelTierRows[active.key] ?? [];
+  const setTiers = (list: TierDraft[]) =>
+    isDefault ? set({ tiers: list }) : set({ levelTiers: { ...draft.levelTiers, [active.key]: list } });
+  const setOwn = (on: boolean) => {
+    const next = { ...draft.levelTiers };
+    if (on) next[active.key] = suggestedTiers();
+    else delete next[active.key];
+    set({ levelTiers: next });
   };
-  const suggested = () =>
-    set({
-      tiers: [
-        { key: newKey(), min: "1", max: "9", mode: "DISCOUNT", value: "0" },
-        { key: newKey(), min: "10", max: "49", mode: "DISCOUNT", value: "5" },
-        { key: newKey(), min: "50", max: "", mode: "DISCOUNT", value: "10" },
-      ],
-    });
-  const update = (key: string, patch: Partial<TierDraft>) =>
-    set({ tiers: draft.tiers.map((t) => (t.key === key ? { ...t, ...patch } : t)) });
+  const ownCount = (key: string) => (key === x.defaultLevel.key ? draft.tiers.length : draft.levelTiers[key]?.length ?? 0);
+  const example = x.defaultLevel.multiplier / Math.max(1, active.multiplier);
 
   return (
     <FormSection
@@ -1227,86 +1230,65 @@ function TiersSection({ draft, set, x, errorFor, full }: SectionProps) {
       step={4}
       icon={Boxes}
       title="Quantity pricing tiers"
-      description={`Bulk prices by order quantity, counted in ${packs}. Leave empty to always use the selling price.`}
-      actions={
-        <>
-          {draft.tiers.length === 0 && (
-            <button type="button" onClick={suggested} className={btn.small}>
-              Use 0 / 5 / 10% tiers
-            </button>
-          )}
-          <button type="button" onClick={addTier} className={btn.small}>
-            <Plus className="size-3.5" aria-hidden />
-            Add tier
-          </button>
-        </>
-      }
+      description="Bulk prices by order quantity. Set them for the default unit, and give any other pack size its own ladder if it sells differently."
     >
-      {draft.tiers.length === 0 ? (
-        <p className="rounded-lg border border-dashed border-slate-300 px-4 py-6 text-center text-sm text-apptext-secondary">
-          No tiers. Every order is charged {x.packSell > 0 ? formatCurrency(x.packSell) : "the selling price"} per {pack.toLowerCase()}.
-        </p>
-      ) : (
-        <div className="space-y-2">
-          <div className="hidden grid-cols-[1fr_1fr_1.3fr_1.2fr_1fr_auto] gap-2 px-1 text-xs font-medium text-apptext-secondary md:grid">
-            <span>Min {packs}</span>
-            <span>Max {packs}</span>
-            <span>Price by</span>
-            <span>Value</span>
-            <span className="text-right">Works out to</span>
-            <span className="w-8" />
-          </div>
-          {draft.tiers.map((t, i) => {
-            const row = x.tierRows[i];
+      {units.length > 1 && (
+        <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Unit">
+          {units.map((u) => {
+            const on = u.key === active.key;
+            const count = ownCount(u.key);
+            const inherits = u.key !== x.defaultLevel.key && draft.levelTiers[u.key] === undefined;
             return (
-              <div
-                key={t.key}
-                className="grid grid-cols-2 gap-2 rounded-lg border border-slate-200 p-2.5 md:grid-cols-[1fr_1fr_1.3fr_1.2fr_1fr_auto] md:items-center md:border-0 md:p-1"
-              >
-                <NumberInput ariaLabel={`Tier ${i + 1} minimum`} value={t.min} onChange={(v) => update(t.key, { min: v })} invalid={!!errorFor(`tier.${t.key}.min`) || liveErrors.some((e) => e.key === `tier.${t.key}.min`)} placeholder="Min" />
-                <NumberInput ariaLabel={`Tier ${i + 1} maximum`} value={t.max} onChange={(v) => update(t.key, { max: v })} invalid={!!errorFor(`tier.${t.key}.max`) || liveErrors.some((e) => e.key === `tier.${t.key}.max`)} placeholder="and above" />
-                <div className="col-span-2 flex rounded-lg border border-slate-200 p-0.5 md:col-span-1" role="group" aria-label={`Tier ${i + 1} price type`}>
-                  {(["DISCOUNT", "PRICE"] as const).map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      aria-pressed={t.mode === m}
-                      onClick={() => update(t.key, { mode: m, value: "" })}
-                      className={cn(
-                        "flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition",
-                        t.mode === m ? "bg-brand-primary text-white" : "text-slate-600 hover:bg-slate-50"
-                      )}
-                    >
-                      {m === "DISCOUNT" ? "Discount %" : `Price / ${pack.toLowerCase()}`}
-                    </button>
-                  ))}
-                </div>
-                {t.mode === "PRICE" ? (
-                  <MoneyInput id={`tier-${t.key}`} value={t.value} onChange={(v) => update(t.key, { value: v })} invalid={!!errorFor(`tier.${t.key}.value`)} />
-                ) : (
-                  <NumberInput ariaLabel={`Tier ${i + 1} discount`} step="0.5" value={t.value} onChange={(v) => update(t.key, { value: v })} suffix="%" invalid={!!errorFor(`tier.${t.key}.value`)} />
+              <button
+                key={u.key}
+                type="button"
+                role="tab"
+                aria-selected={on}
+                onClick={() => setTab(u.key)}
+                className={cn(
+                  "rounded-lg border px-3 py-1.5 text-sm font-medium transition",
+                  on ? "border-brand-primary bg-brand-light text-brand-primary" : "border-slate-200 text-slate-600 hover:bg-slate-50"
                 )}
-                <p className="text-right text-sm tabular-nums text-apptext-secondary">
-                  {t.mode === "PRICE"
-                    ? Number.isFinite(row.discountPct)
-                      ? `${row.discountPct.toFixed(1)}% off`
-                      : "—"
-                    : row.packPrice > 0
-                    ? formatCurrency(row.packPrice)
-                    : "—"}
-                </p>
-                <button
-                  type="button"
-                  onClick={() => set({ tiers: draft.tiers.filter((r) => r.key !== t.key) })}
-                  aria-label={`Remove tier ${i + 1}`}
-                  className="justify-self-end rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
-                >
-                  <Trash2 className="size-4" />
-                </button>
-              </div>
+              >
+                {u.name}
+                <span className="ml-1.5 text-xs font-normal text-apptext-secondary">
+                  {u.key === x.defaultLevel.key ? "default" : inherits ? "inherits" : `${count} ${plural("tier", count)}`}
+                </span>
+              </button>
             );
           })}
         </div>
+      )}
+
+      {!isDefault && (
+        <Switch
+          checked={own}
+          onChange={setOwn}
+          label={`Own tiers for ${plural(active.name, 2).toLowerCase()}`}
+          description={
+            own
+              ? `${active.name} orders are priced by how many ${plural(active.name, 2).toLowerCase()} are ordered.`
+              : `Off: ${plural(active.name, 2).toLowerCase()} use the ${x.defaultLevel.name.toLowerCase()} tiers by ${base.name.toLowerCase()} count${
+                  example > 1 && Number.isInteger(example) ? ` (${example} ${plural(active.name, example).toLowerCase()} count as 1 ${x.defaultLevel.name.toLowerCase()})` : ""
+                }.`
+          }
+        />
+      )}
+
+      {own && (
+        <TierEditor
+          key={active.key}
+          unitName={active.name}
+          baseName={base.name}
+          multiplier={Math.max(1, active.multiplier)}
+          packSell={round2((Number.isFinite(x.sell) ? x.sell : 0) * Math.max(1, active.multiplier))}
+          packCost={round2((Number.isFinite(x.cost) ? x.cost : 0) * Math.max(1, active.multiplier))}
+          tiers={tiers}
+          rows={rows}
+          onChange={setTiers}
+          errorFor={errorFor}
+          liveErrors={liveErrors}
+        />
       )}
 
       {liveErrors.length > 0 && (
@@ -1319,32 +1301,153 @@ function TiersSection({ draft, set, x, errorFor, full }: SectionProps) {
         </Notice>
       )}
       <SectionWarnings issues={full.warnings.filter((w) => w.section === "tiers")} />
+    </FormSection>
+  );
+}
+
+/** Editable tier table for one unit, with a live "what the customer pays" preview. */
+function TierEditor({
+  unitName,
+  baseName,
+  multiplier,
+  packSell,
+  packCost,
+  tiers,
+  rows,
+  onChange,
+  errorFor,
+  liveErrors,
+}: {
+  unitName: string;
+  baseName: string;
+  multiplier: number;
+  packSell: number;
+  packCost: number;
+  tiers: TierDraft[];
+  rows: Derived["tierRows"];
+  onChange: (t: TierDraft[]) => void;
+  errorFor: (key: string) => string | undefined;
+  liveErrors: Issue[];
+}) {
+  const unit = unitName.toLowerCase();
+  const units = plural(unitName, 2).toLowerCase();
+  const sorted = [...rows].filter((t) => Number.isFinite(t.min)).sort((a, b) => a.min - b.min);
+  const bad = (k: string) => !!errorFor(k) || liveErrors.some((e) => e.key === k);
+
+  const addTier = () => {
+    const last = sorted[sorted.length - 1];
+    const min = last ? (last.max === null ? "" : String(last.max + 1)) : "1";
+    onChange([...tiers, { key: newKey(), min, max: "", mode: "DISCOUNT", value: "" }]);
+  };
+  const update = (key: string, patch: Partial<TierDraft>) => onChange(tiers.map((t) => (t.key === key ? { ...t, ...patch } : t)));
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs text-apptext-secondary">
+          Quantities in {units} · list price {packSell > 0 ? formatCurrency(packSell) : "—"} per {unit}
+        </p>
+        <div className="flex gap-2">
+          <button type="button" onClick={() => onChange(suggestedTiers())} className={btn.small}>
+            Use 0 / 5 / 10 / 15% ladder
+          </button>
+          <button type="button" onClick={addTier} className={btn.small}>
+            <Plus className="size-3.5" aria-hidden />
+            Add tier
+          </button>
+        </div>
+      </div>
+
+      {tiers.length === 0 ? (
+        <p className="rounded-lg border border-dashed border-slate-300 px-4 py-6 text-center text-sm text-apptext-secondary">
+          No tiers. Every order is charged {packSell > 0 ? formatCurrency(packSell) : "the selling price"} per {unit}.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          <div className="hidden grid-cols-[1fr_1fr_1.3fr_1.2fr_1fr_auto] gap-2 px-1 text-xs font-medium text-apptext-secondary md:grid">
+            <span>Min {units}</span>
+            <span>Max {units}</span>
+            <span>Price by</span>
+            <span>Value</span>
+            <span className="text-right">Works out to</span>
+            <span className="w-8" />
+          </div>
+          {tiers.map((t, i) => {
+            const row = rows[i];
+            return (
+              <div
+                key={t.key}
+                className="grid grid-cols-2 gap-2 rounded-lg border border-slate-200 p-2.5 md:grid-cols-[1fr_1fr_1.3fr_1.2fr_1fr_auto] md:items-center md:border-0 md:p-1"
+              >
+                <NumberInput ariaLabel={`${unitName} tier ${i + 1} minimum`} value={t.min} onChange={(v) => update(t.key, { min: v })} invalid={bad(`tier.${t.key}.min`)} placeholder="Min" />
+                <NumberInput ariaLabel={`${unitName} tier ${i + 1} maximum`} value={t.max} onChange={(v) => update(t.key, { max: v })} invalid={bad(`tier.${t.key}.max`)} placeholder="and above" />
+                <div className="col-span-2 flex rounded-lg border border-slate-200 p-0.5 md:col-span-1" role="group" aria-label={`Tier ${i + 1} price type`}>
+                  {(["DISCOUNT", "PRICE"] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      aria-pressed={t.mode === m}
+                      onClick={() => update(t.key, { mode: m, value: "" })}
+                      className={cn(
+                        "flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition",
+                        t.mode === m ? "bg-brand-primary text-white" : "text-slate-600 hover:bg-slate-50"
+                      )}
+                    >
+                      {m === "DISCOUNT" ? "Discount %" : `Price / ${unit}`}
+                    </button>
+                  ))}
+                </div>
+                {t.mode === "PRICE" ? (
+                  <MoneyInput id={`tier-${t.key}`} value={t.value} onChange={(v) => update(t.key, { value: v })} invalid={bad(`tier.${t.key}.value`)} />
+                ) : (
+                  <NumberInput ariaLabel={`${unitName} tier ${i + 1} discount`} step="0.5" value={t.value} onChange={(v) => update(t.key, { value: v })} suffix="%" invalid={bad(`tier.${t.key}.value`)} />
+                )}
+                <p className="text-right text-sm tabular-nums text-apptext-secondary">
+                  {t.mode === "PRICE"
+                    ? row && Number.isFinite(row.discountPct)
+                      ? `${row.discountPct.toFixed(1)}% off`
+                      : "—"
+                    : row && row.packPrice > 0
+                    ? formatCurrency(row.packPrice)
+                    : "—"}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => onChange(tiers.filter((r) => r.key !== t.key))}
+                  aria-label={`Remove ${unit} tier ${i + 1}`}
+                  className="justify-self-end rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                >
+                  <Trash2 className="size-4" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {sorted.length > 0 && (
         <div className="overflow-x-auto rounded-lg border border-slate-200">
-          <p className="border-b border-slate-100 bg-surface px-3 py-2 text-xs font-medium text-apptext-secondary">Preview: what a customer pays</p>
+          <p className="border-b border-slate-100 bg-surface px-3 py-2 text-xs font-medium text-apptext-secondary">Preview: what a customer pays per {unit}</p>
           <table className="w-full min-w-[480px] text-left text-sm">
             <thead className="text-xs text-apptext-secondary">
               <tr>
                 <th className="px-3 py-2 font-medium">Order quantity</th>
-                <th className="px-3 py-2 text-right font-medium">Price / {pack.toLowerCase()}</th>
-                <th className="px-3 py-2 text-right font-medium">Per {x.levels[0].name.toLowerCase()}</th>
+                <th className="px-3 py-2 text-right font-medium">Price / {unit}</th>
+                <th className="px-3 py-2 text-right font-medium">Per {baseName.toLowerCase()}</th>
                 <th className="px-3 py-2 text-right font-medium">Discount</th>
                 <th className="px-3 py-2 text-right font-medium">Margin</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 tabular-nums">
               {sorted.map((t) => {
-                const m = x.packCost > 0 && t.packPrice > 0 ? ((t.packPrice - x.packCost) / t.packPrice) * 100 : null;
+                const m = packCost > 0 && t.packPrice > 0 ? ((t.packPrice - packCost) / t.packPrice) * 100 : null;
                 return (
                   <tr key={t.key}>
                     <td className="px-3 py-2 font-medium text-apptext-primary">
-                      {t.max === null ? `${t.min}+` : t.min === t.max ? `${t.min}` : `${t.min}–${t.max}`} {plural(pack, t.max ?? 2).toLowerCase()}
+                      {t.max === null ? `${t.min}+` : t.min === t.max ? `${t.min}` : `${t.min}–${t.max}`} {plural(unitName, t.max ?? 2).toLowerCase()}
                     </td>
                     <td className="px-3 py-2 text-right font-semibold">{t.packPrice > 0 ? formatCurrency(t.packPrice) : "—"}</td>
-                    <td className="px-3 py-2 text-right text-apptext-secondary">
-                      {t.packPrice > 0 ? formatCurrency(round2(t.packPrice / x.mult)) : "—"}
-                    </td>
+                    <td className="px-3 py-2 text-right text-apptext-secondary">{t.packPrice > 0 ? formatCurrency(round2(t.packPrice / multiplier)) : "—"}</td>
                     <td className="px-3 py-2 text-right">{Number.isFinite(t.discountPct) ? `${t.discountPct.toFixed(1)}%` : "—"}</td>
                     <td className={cn("px-3 py-2 text-right font-medium", marginTone(m))}>{fmtPct(m)}</td>
                   </tr>
@@ -1354,7 +1457,7 @@ function TiersSection({ draft, set, x, errorFor, full }: SectionProps) {
           </table>
         </div>
       )}
-    </FormSection>
+    </div>
   );
 }
 

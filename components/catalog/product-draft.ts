@@ -71,7 +71,13 @@ export interface ProductDraft {
   maxDiscountPct: string;
   minOrderQty: string;
 
+  /** Tiers of the default sale unit (counted in that unit). */
   tiers: TierDraft[];
+  /**
+   * Own tiers per other sellable unit ("base" or a PackDraft key). A unit
+   * missing here inherits the default-unit tiers by base-unit equivalent.
+   */
+  levelTiers: Record<string, TierDraft[]>;
 
   sku: string;
   skuTouched: boolean;
@@ -141,6 +147,7 @@ export function emptyDraft(keep?: Partial<ProductDraft>): ProductDraft {
     maxDiscountPct: "10",
     minOrderQty: "1",
     tiers: [],
+    levelTiers: {},
     sku: "",
     skuTouched: false,
     reorderLevel: "",
@@ -187,13 +194,13 @@ export function draftFromItem(item: InventoryItem, barcodes: Record<string, stri
   const defaultMult = Math.max(1, levels[defaultIdx]?.multiplier ?? 1);
   const packSell = item.sellingPrice * defaultMult;
 
-  const tiers: TierDraft[] = (item.pricingTiers ?? []).map((t) => ({
-    key: newKey(),
-    min: String(t.minQuantity),
-    max: t.maxQuantity === null ? "" : String(t.maxQuantity),
-    mode: t.discountPct > 0 || Math.abs(t.unitPrice - packSell) < 0.01 ? "DISCOUNT" : "PRICE",
-    value: t.discountPct > 0 || Math.abs(t.unitPrice - packSell) < 0.01 ? String(t.discountPct) : String(t.unitPrice),
-  }));
+  const tiers = tierDraftsFrom(item.pricingTiers ?? [], packSell);
+  const levelTiers: Record<string, TierDraft[]> = {};
+  ladder.forEach((l, i) => {
+    if (l.isDefaultSale || !l.tiers?.length) return;
+    const key = i === 0 ? "base" : packs[i - 1]?.key;
+    if (key) levelTiers[key] = tierDraftsFrom(l.tiers, l.price);
+  });
 
   return emptyDraft({
     name: asCopy ? `${item.name} (copy)` : item.name,
@@ -223,6 +230,7 @@ export function draftFromItem(item: InventoryItem, barcodes: Record<string, stri
     maxDiscountPct: str(item.maxDiscountPct ?? 0),
     minOrderQty: str(item.minOrderQty ?? 1),
     tiers,
+    levelTiers,
     sku: asCopy ? "" : item.sku,
     skuTouched: !asCopy,
     reorderLevel: str(item.reorderLevel),
@@ -259,6 +267,53 @@ export interface TierRow {
   discountPct: number;
 }
 
+function tierRowsFor(list: TierDraft[], packSell: number): TierRow[] {
+  return list.map((t) => {
+    const v = num(t.value);
+    const packPrice = t.mode === "PRICE" ? v : round2(packSell * (1 - (Number.isFinite(v) ? v : 0) / 100));
+    const discountPct = t.mode === "DISCOUNT" ? v : packSell > 0 ? round2((1 - v / packSell) * 100) : NaN;
+    return { key: t.key, min: Math.floor(num(t.min)), max: t.max.trim() === "" ? null : Math.floor(num(t.max)), packPrice, discountPct };
+  });
+}
+
+/** Saved tiers → editable rows (keeps "price" mode when a tier only stores a price). */
+export function tierDraftsFrom(list: QuantityPricingTier[], packSell: number): TierDraft[] {
+  return list.map((t) => {
+    const byPct = t.discountPct > 0 || Math.abs(t.unitPrice - packSell) < 0.01;
+    return {
+      key: newKey(),
+      min: String(t.minQuantity),
+      max: t.maxQuantity === null ? "" : String(t.maxQuantity),
+      mode: byPct ? "DISCOUNT" : "PRICE",
+      value: byPct ? String(t.discountPct) : String(t.unitPrice),
+    };
+  });
+}
+
+/** Rows → saved tiers, sorted. */
+function rowsToTiers(rows: TierRow[]): QuantityPricingTier[] {
+  const z = (n: number) => (Number.isFinite(n) ? n : 0);
+  return rows
+    .filter((t) => Number.isFinite(t.min))
+    .sort((a, b) => a.min - b.min)
+    .map((t) => ({
+      minQuantity: t.min,
+      maxQuantity: t.max,
+      unitPrice: round2(z(t.packPrice)),
+      discountPct: round2(Math.max(0, z(t.discountPct))),
+    }));
+}
+
+/** "4 Box tiers" etc. — the 0/5/10/15% ladder from the pricing brief. */
+export function suggestedTiers(): TierDraft[] {
+  return [
+    { key: newKey(), min: "1", max: "9", mode: "DISCOUNT", value: "0" },
+    { key: newKey(), min: "10", max: "49", mode: "DISCOUNT", value: "5" },
+    { key: newKey(), min: "50", max: "99", mode: "DISCOUNT", value: "10" },
+    { key: newKey(), min: "100", max: "", mode: "DISCOUNT", value: "15" },
+  ];
+}
+
 export function derive(d: ProductDraft) {
   const levels: LevelInfo[] = [{ key: "base", name: d.baseUnit || "Unit", multiplier: 1, isBase: true }];
   for (const p of d.packs) {
@@ -273,12 +328,13 @@ export function derive(d: ProductDraft) {
   const maxDisc = num(d.maxDiscountPct);
   const packSell = round2(sell * mult);
 
-  const tierRows: TierRow[] = d.tiers.map((t) => {
-    const v = num(t.value);
-    const packPrice = t.mode === "PRICE" ? v : round2(packSell * (1 - (Number.isFinite(v) ? v : 0) / 100));
-    const discountPct = t.mode === "DISCOUNT" ? v : packSell > 0 ? round2((1 - v / packSell) * 100) : NaN;
-    return { key: t.key, min: Math.floor(num(t.min)), max: t.max.trim() === "" ? null : Math.floor(num(t.max)), packPrice, discountPct };
-  });
+  const tierRows = tierRowsFor(d.tiers, packSell);
+  /** Own tier rows per non-default unit key. */
+  const levelTierRows: Record<string, TierRow[]> = {};
+  for (const [key, list] of Object.entries(d.levelTiers)) {
+    const lv = levels.find((l) => l.key === key);
+    if (lv && lv.key !== defaultLevel.key) levelTierRows[key] = tierRowsFor(list, round2(sell * Math.max(1, lv.multiplier)));
+  }
 
   const openingLevel = levels.find((l) => l.key === d.openingLevelKey) ?? defaultLevel;
   const openingBase = Math.floor(num(d.openingQty) || 0) * openingLevel.multiplier;
@@ -298,6 +354,7 @@ export function derive(d: ProductDraft) {
     markup: markupPct(cost, sell),
     marginAtMaxDiscount: Number.isFinite(maxDisc) ? marginPct(cost, sell * (1 - maxDisc / 100)) : null,
     tierRows,
+    levelTierRows,
     openingLevel,
     openingBase,
     openingCost,
@@ -408,38 +465,48 @@ export function validate(
     warn("maxDiscountPct", "pricing", `At the full ${md}% discount the price drops below cost.`);
   if (!isInt(d.minOrderQty) || Number(d.minOrderQty) < 1) err("minOrderQty", "pricing", "Minimum order must be a whole number of 1 or more.");
 
-  /* tiers */
-  const rows = x.tierRows;
-  rows.forEach((t, i) => {
-    const label = `Tier ${i + 1}`;
-    const raw = d.tiers[i];
-    if (!isInt(raw.min) || t.min < 1) err(`tier.${t.key}.min`, "tiers", `${label}: minimum quantity must be 1 or more.`);
-    if (raw.max.trim() !== "" && (!isInt(raw.max) || (t.max !== null && t.max < t.min)))
-      err(`tier.${t.key}.max`, "tiers", `${label}: maximum must be a whole number not below the minimum.`);
-    const v = num(raw.value);
-    if (raw.mode === "PRICE") {
-      if (!(v > 0)) err(`tier.${t.key}.value`, "tiers", `${label}: enter a price per ${x.defaultLevel.name.toLowerCase()}.`);
-      else if (x.packSell > 0 && v > x.packSell) err(`tier.${t.key}.value`, "tiers", `${label}: tier price is above the normal selling price.`);
-    } else if (!(v >= 0 && v < 100)) err(`tier.${t.key}.value`, "tiers", `${label}: discount must be between 0 and 99%.`);
-    if (Number.isFinite(t.discountPct) && md >= 0 && t.discountPct > md + 0.001)
-      warn(`tier.${t.key}.value`, "tiers", `${label}: ${t.discountPct.toFixed(1)}% is more than the ${md}% max discount.`);
-    if (x.packCost > 0 && t.packPrice > 0 && t.packPrice < x.packCost)
-      warn(`tier.${t.key}.value`, "tiers", `${label}: price is below cost.`);
-  });
-  const sorted = rows.filter((t) => Number.isFinite(t.min)).slice().sort((a, b) => a.min - b.min);
-  for (let i = 0; i < sorted.length; i++) {
-    const t = sorted[i];
-    const next = sorted[i + 1];
-    if (!next) break;
-    if (t.max === null) {
-      err(`tier.${t.key}.max`, "tiers", `Tier from ${t.min} has no upper limit but another tier starts at ${next.min}.`);
-      continue;
+  /* tiers: default unit, then every unit with its own tiers */
+  const checkTiers = (rows: TierRow[], raws: TierDraft[], unitName: string, packSell: number, packCost: number, prefix: string) => {
+    const unit = unitName.toLowerCase();
+    rows.forEach((t, i) => {
+      const label = `${prefix}tier ${i + 1}`.replace(/^t/, "T");
+      const raw = raws[i];
+      if (!isInt(raw.min) || t.min < 1) err(`tier.${t.key}.min`, "tiers", `${label}: minimum quantity must be 1 or more.`);
+      if (raw.max.trim() !== "" && (!isInt(raw.max) || (t.max !== null && t.max < t.min)))
+        err(`tier.${t.key}.max`, "tiers", `${label}: maximum must be a whole number not below the minimum.`);
+      const v = num(raw.value);
+      if (raw.mode === "PRICE") {
+        if (!(v > 0)) err(`tier.${t.key}.value`, "tiers", `${label}: enter a price per ${unit}.`);
+        else if (packSell > 0 && v > packSell) err(`tier.${t.key}.value`, "tiers", `${label}: tier price is above the normal ${unit} price.`);
+      } else if (!(v >= 0 && v < 100)) err(`tier.${t.key}.value`, "tiers", `${label}: discount must be between 0 and 99%.`);
+      if (Number.isFinite(t.discountPct) && md >= 0 && t.discountPct > md + 0.001)
+        warn(`tier.${t.key}.value`, "tiers", `${label}: ${t.discountPct.toFixed(1)}% is more than the ${md}% max discount.`);
+      if (packCost > 0 && t.packPrice > 0 && t.packPrice < packCost) warn(`tier.${t.key}.value`, "tiers", `${label}: price is below cost.`);
+    });
+    const sorted = rows.filter((t) => Number.isFinite(t.min)).slice().sort((a, b) => a.min - b.min);
+    for (let i = 0; i < sorted.length; i++) {
+      const t = sorted[i];
+      const next = sorted[i + 1];
+      if (!next) break;
+      if (t.max === null) {
+        err(`tier.${t.key}.max`, "tiers", `${prefix}Tier from ${t.min} has no upper limit but another tier starts at ${next.min}.`);
+        continue;
+      }
+      if (next.min <= t.max) err(`tier.${next.key}.min`, "tiers", `${prefix}Tiers ${t.min}–${t.max} and ${next.min}–${next.max ?? "∞"} overlap.`);
+      else if (next.min > t.max + 1) err(`tier.${next.key}.min`, "tiers", `${prefix}Gap: ${t.max + 1}–${next.min - 1} ${plural(unitName, 2).toLowerCase()} are not covered by any tier.`);
+      if (Number.isFinite(next.packPrice) && Number.isFinite(t.packPrice) && next.packPrice > t.packPrice + 0.001)
+        warn(`tier.${next.key}.value`, "tiers", `${prefix}Tier from ${next.min} is dearer than the tier before it.`);
     }
-    if (next.min <= t.max) err(`tier.${next.key}.min`, "tiers", `Tiers ${t.min}–${t.max} and ${next.min}–${next.max ?? "∞"} overlap.`);
-    else if (next.min > t.max + 1) err(`tier.${next.key}.min`, "tiers", `Gap: quantities ${t.max + 1}–${next.min - 1} are not covered by any tier.`);
+    if (sorted.length && sorted[0].min > 1)
+      warn(`tier.${sorted[0].key}.min`, "tiers", `${prefix}Orders below ${sorted[0].min} ${plural(unitName, 2).toLowerCase()} use the normal selling price.`);
+  };
+  checkTiers(x.tierRows, d.tiers, x.defaultLevel.name, x.packSell, x.packCost, "");
+  for (const [key, rows] of Object.entries(x.levelTierRows)) {
+    const lv = x.levels.find((l) => l.key === key)!;
+    const name = lv.name;
+    if (!rows.length) err(`levelTiers.${key}`, "tiers", `${name}: add at least one tier or switch its own tiers off.`);
+    checkTiers(rows, d.levelTiers[key], name, round2(x.sell * lv.multiplier), round2(x.cost * lv.multiplier), `${name} `);
   }
-  if (sorted.length && sorted[0].min > 1)
-    warn(`tier.${sorted[0].key}.min`, "tiers", `Orders below ${sorted[0].min} use the normal selling price.`);
 
   /* inventory */
   const sku = d.sku.trim();
@@ -514,9 +581,10 @@ export function buildItem(
     isSellable: draftByKey[l.key]?.sellable !== false || l.key === x.defaultLevel.key,
     isPurchaseUnit: l.key === d.purchasePackKey,
     barcode: draftByKey[l.key]?.barcode.trim() || undefined,
+    pricingTiers: x.levelTierRows[l.key]?.length ? rowsToTiers(x.levelTierRows[l.key]) : undefined,
   }));
   // The base unit gets its own row whenever it carries a flag.
-  if (x.defaultLevel.isBase || !d.baseSellable || d.purchasePackKey === "base") {
+  if (x.defaultLevel.isBase || !d.baseSellable || d.purchasePackKey === "base" || x.levelTierRows.base?.length) {
     packSizes.unshift({
       id: "pk-base",
       packNameEn: d.baseUnit,
@@ -527,17 +595,10 @@ export function buildItem(
       isDefault: x.defaultLevel.isBase,
       isSellable: d.baseSellable || x.defaultLevel.isBase,
       isPurchaseUnit: d.purchasePackKey === "base",
+      pricingTiers: x.levelTierRows.base?.length ? rowsToTiers(x.levelTierRows.base) : undefined,
     });
   }
-  const pricingTiers: QuantityPricingTier[] = x.tierRows
-    .filter((t) => Number.isFinite(t.min))
-    .sort((a, b) => a.min - b.min)
-    .map((t) => ({
-      minQuantity: t.min,
-      maxQuantity: t.max,
-      unitPrice: round2(orZero(t.packPrice)),
-      discountPct: round2(Math.max(0, orZero(t.discountPct))),
-    }));
+  const pricingTiers = rowsToTiers(x.tierRows);
 
   return {
     ...(opts.existing ?? {}),

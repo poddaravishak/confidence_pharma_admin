@@ -317,6 +317,8 @@ interface PackOpts {
   purchase?: string;
   /** 6-digit product code used to derive one EAN-13 per pack level. */
   code?: string;
+  /** Own quantity tiers per pack name, as % steps of that pack's price. */
+  tiers?: Record<string, [min: number, max: number | null, pct: number][]>;
 }
 
 /**
@@ -337,6 +339,7 @@ function packs(levels: Level[], defaultName: string, mrp: number, sell: number, 
     isSellable: !opts.notSellable?.includes(name),
     isPurchaseUnit: opts.purchase ? name === opts.purchase : i === levels.length - 1,
     barcode: opts.code ? ean13(`21${opts.code}${String(i + 1).padStart(4, "0")}`) : undefined,
+    pricingTiers: opts.tiers?.[name] ? tiers(Math.round(sell * m * 100) / 100, opts.tiers[name]) : undefined,
   }));
   if (opts.baseSellable === false) {
     rows.unshift({
@@ -373,7 +376,12 @@ export const SEED_PRODUCT_EXTRAS: Record<string, Partial<InventoryItem>> = {
     dgdaRegNo: "037-0412-001",
     barcode: ean13("200000000101"),
     isPrescriptionRequired: false,
-    packSizes: packs([["Strip", 12], ["Box", 240]], "Box", 3, 2.5, { baseSellable: false, code: "000101" }),
+    packSizes: packs([["Strip", 12], ["Box", 240]], "Box", 3, 2.5, {
+      baseSellable: false,
+      code: "000101",
+      // Loose strips have their own ladder; boxes use the product tiers below.
+      tiers: { Strip: [[1, 49, 0], [50, 199, 3], [200, null, 5]] },
+    }),
     pricingTiers: tiers(600, [[1, 9, 0], [10, 49, 5], [50, null, 10]]),
     vatPct: 0,
     maxDiscountPct: 10,
@@ -601,10 +609,15 @@ export const SEED_PRODUCT_EXTRAS: Record<string, Partial<InventoryItem>> = {
     barcode: ean13("200000001601"),
     isPrescriptionRequired: true,
     // 1 Strip = 10 Tablets · 1 Box = 2 Strips · 1 Carton = 50 Boxes
-    packSizes: packs([["Strip", 10], ["Box", 20], ["Carton", 1000]], "Box", 15, 14, { notSellable: ["Carton"], code: "001601" }),
-    pricingTiers: tiers(280, [[1, 9, 0], [10, 49, 4], [50, null, 8]]),
+    packSizes: packs([["Strip", 10], ["Box", 20], ["Carton", 1000]], "Box", 15, 14, {
+      notSellable: ["Carton"],
+      code: "001601",
+      tiers: { Strip: [[1, 19, 0], [20, 49, 3], [50, null, 5]] },
+    }),
+    // Box (default unit): 1–9 0% · 10–49 5% · 50–99 10% · 100+ 15%
+    pricingTiers: tiers(280, [[1, 9, 0], [10, 49, 5], [50, 99, 10], [100, null, 15]]),
+    maxDiscountPct: 15,
     vatPct: 0,
-    maxDiscountPct: 8,
     minOrderQty: 1,
     visibleTo: NO_RETAIL_SURGICAL,
     defaultWarehouseId: "wh-01",

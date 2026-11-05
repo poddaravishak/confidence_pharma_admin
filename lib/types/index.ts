@@ -120,6 +120,11 @@ export interface PackSize {
   isPurchaseUnit?: boolean;
   /** Barcode printed on this pack level. */
   barcode?: string;
+  /**
+   * Quantity tiers for orders in THIS unit (quantities counted in this unit).
+   * Empty/undefined = use the product tiers by default-unit equivalent.
+   */
+  pricingTiers?: QuantityPricingTier[];
 }
 
 export interface QuantityPricingTier {
@@ -380,6 +385,7 @@ export interface InventoryItem {
   isControlled?: boolean;
   /** Extra sellable pack levels (e.g. Strip, Box, Carton) with their own prices. */
   packSizes?: PackSize[];
+  /** Quantity tiers of the default sale unit (counted in that unit). */
   pricingTiers?: QuantityPricingTier[];
   imageUrls?: string[];
   visibleTo?: CustomerType[];

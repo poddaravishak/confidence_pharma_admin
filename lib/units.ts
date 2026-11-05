@@ -19,7 +19,7 @@
  * stock exact (integers, no fractions of a box) while letting staff order,
  * purchase, count and return in whatever unit is natural.
  */
-import type { InventoryItem, PackSize } from "@/lib/types";
+import type { InventoryItem, PackSize, QuantityPricingTier } from "@/lib/types";
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -48,6 +48,8 @@ export interface UnitLevel {
   mrp: number;
   price: number;
   cost: number;
+  /** This unit's own quantity tiers (see lib/pricing.ts). */
+  tiers?: QuantityPricingTier[];
 }
 
 export interface QtyPart {
@@ -120,6 +122,7 @@ export function unitLevels(item: ItemLike): UnitLevel[] {
     mrp: item.mrp,
     price: baseRow?.packSellingPrice ?? item.sellingPrice,
     cost: item.costPrice,
+    tiers: baseRow?.pricingTiers,
   };
 
   let rows = packs
@@ -135,6 +138,7 @@ export function unitLevels(item: ItemLike): UnitLevel[] {
       barcode: p.barcode,
       mrp: p.packMrp || round2(item.mrp * p.multiplierToBase),
       price: p.packSellingPrice || round2(item.sellingPrice * p.multiplierToBase),
+      tiers: p.pricingTiers,
     }));
 
   // Older items carry only packUnit/unitsPerPack.
@@ -151,6 +155,7 @@ export function unitLevels(item: ItemLike): UnitLevel[] {
         barcode: undefined,
         mrp: round2(item.mrp * item.unitsPerPack),
         price: round2(item.sellingPrice * item.unitsPerPack),
+        tiers: undefined,
       },
     ];
   }

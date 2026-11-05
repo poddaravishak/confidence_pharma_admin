@@ -44,6 +44,7 @@ import { fmtPct, marginPct, marginTone, round2 } from "@/components/catalog/cata
 import { availableIn, conversionChain, defaultSaleLevel, formatQty, qtyText, unitLevels } from "@/lib/units";
 import { packUnitOf } from "@/components/orders/shared";
 import { ConversionLadder, UnitConverter } from "@/components/units";
+import { tierDiscountPct, tierRangeLabel, tierTable, tierUnitPrice } from "@/lib/pricing";
 
 type Tab = "overview" | "stock" | "movements" | "sales";
 
@@ -320,8 +321,6 @@ function Overview({
 }) {
   const ladder = unitLevels(item);
   const sale = ladder.find((l) => l.isDefaultSale)!;
-  const tiers = [...(item.pricingTiers ?? [])].sort((a, b) => a.minQuantity - b.minQuantity);
-  const packCost = sale.cost;
   const visible = item.visibleTo ?? ALL_CUSTOMER_TYPES;
 
   return (
@@ -410,41 +409,64 @@ function Overview({
         <Card className="overflow-hidden">
           <CardHeader
             title="Quantity price tiers"
-            description={`Quantities in ${plural(sale.name, 2).toLowerCase()}. Lines in other units count by their ${item.baseUnit.toLowerCase()} equivalent.`}
+            description="Price per unit drops as the ordered quantity grows. Each pack size can have its own ladder; units without one use the default unit's tiers by base-unit count."
           />
-          {tiers.length === 0 ? (
-            <p className="px-5 py-6 text-center text-sm text-apptext-secondary">
-              No tiers. Every order pays {formatCurrency(sale.price)} per {sale.name.toLowerCase()}.
-            </p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[480px] text-left text-sm">
-                <thead className="bg-surface text-xs font-medium text-apptext-secondary">
-                  <tr>
-                    <th className="px-4 py-2">Order quantity</th>
-                    <th className="px-3 py-2 text-right">Price / {sale.name.toLowerCase()}</th>
-                    <th className="px-3 py-2 text-right">Discount</th>
-                    <th className="px-4 py-2 text-right">Margin</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 tabular-nums">
-                  {tiers.map((t) => {
-                    const m = t.unitPrice > 0 ? ((t.unitPrice - packCost) / t.unitPrice) * 100 : null;
-                    return (
-                      <tr key={t.minQuantity}>
-                        <td className="px-4 py-2 font-medium text-apptext-primary">
-                          {t.maxQuantity === null ? `${t.minQuantity}+` : `${t.minQuantity}–${t.maxQuantity}`}
-                        </td>
-                        <td className="px-3 py-2 text-right font-semibold">{formatCurrency(t.unitPrice)}</td>
-                        <td className="px-3 py-2 text-right">{t.discountPct}%</td>
-                        <td className={cn("px-4 py-2 text-right font-medium", marginTone(m))}>{fmtPct(m)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+          <div className="divide-y divide-slate-100">
+            {ladder
+              .filter((l) => l.sellable)
+              .sort((a, b) => Number(b.isDefaultSale) - Number(a.isDefaultSale) || a.factor - b.factor)
+              .map((l) => {
+                const table = tierTable(item, l);
+                const inherited = table.countUnit.id !== l.id;
+                return (
+                  <div key={l.id}>
+                    <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 sm:px-5">
+                      <span className="font-semibold text-apptext-primary">{l.name}</span>
+                      <span className="text-xs tabular-nums text-apptext-secondary">list {formatCurrency(l.price)}</span>
+                      {l.isDefaultSale && <Badge className="border-blue-200 bg-brand-light text-brand-primary">Default unit</Badge>}
+                      {!l.isDefaultSale && !inherited && <Badge className="border-emerald-200 bg-emerald-50 text-emerald-700">Own tiers</Badge>}
+                    </div>
+                    {inherited ? (
+                      <p className="px-4 pb-3 text-xs text-apptext-secondary sm:px-5">
+                        Uses the {sale.name.toLowerCase()} tiers: every {qtyText(sale.factor / l.factor, l.name).toLowerCase()} counts as 1{" "}
+                        {sale.name.toLowerCase()}, and the same discount % applies.
+                      </p>
+                    ) : table.tiers.length === 0 ? (
+                      <p className="px-4 pb-3 text-xs text-apptext-secondary sm:px-5">
+                        No tiers. Every order pays {formatCurrency(l.price)} per {l.name.toLowerCase()}.
+                      </p>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full min-w-[480px] text-left text-sm">
+                          <thead className="bg-surface text-xs font-medium text-apptext-secondary">
+                            <tr>
+                              <th className="px-4 py-2 sm:px-5">Order quantity</th>
+                              <th className="px-3 py-2 text-right">Price / {l.name.toLowerCase()}</th>
+                              <th className="px-3 py-2 text-right">Discount</th>
+                              <th className="px-4 py-2 text-right sm:px-5">Margin</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 tabular-nums">
+                            {table.tiers.map((t) => {
+                              const price = tierUnitPrice(t, l.price);
+                              const m = price > 0 ? ((price - l.cost) / price) * 100 : null;
+                              return (
+                                <tr key={t.minQuantity}>
+                                  <td className="px-4 py-2 font-medium text-apptext-primary sm:px-5">{tierRangeLabel(t, l.name)}</td>
+                                  <td className="px-3 py-2 text-right font-semibold">{formatCurrency(price)}</td>
+                                  <td className="px-3 py-2 text-right">{tierDiscountPct(t, l.price)}%</td>
+                                  <td className={cn("px-4 py-2 text-right font-medium sm:px-5", marginTone(m))}>{fmtPct(m)}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+          </div>
         </Card>
       </div>
 
