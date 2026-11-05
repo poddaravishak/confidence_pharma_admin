@@ -330,7 +330,19 @@ export type MenuItem = {
 
 export function RowMenu({ label, items }: { label: string; items: MenuItem[] }) {
   const [open, setOpen] = useState(false);
+  /** Fixed-position coordinates so table scroll containers can't clip the menu. */
+  const [pos, setPos] = useState<{ top?: number; bottom?: number; right: number }>({ right: 0 });
   const wrap = useRef<HTMLDivElement>(null);
+
+  const toggle = (e: React.MouseEvent<HTMLButtonElement>) => {
+    if (open) return setOpen(false);
+    const r = e.currentTarget.getBoundingClientRect();
+    const estimated = items.length * 56 + 8;
+    const below = window.innerHeight - r.bottom;
+    const right = Math.max(8, window.innerWidth - r.right);
+    setPos(below < estimated && r.top > below ? { bottom: window.innerHeight - r.top + 4, right } : { top: r.bottom + 4, right });
+    setOpen(true);
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -338,11 +350,17 @@ export function RowMenu({ label, items }: { label: string; items: MenuItem[] }) 
       if (wrap.current && !wrap.current.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    // A fixed menu would drift away from its row on scroll, so close it instead.
+    const onMove = () => setOpen(false);
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", onMove, true);
+    window.addEventListener("resize", onMove);
     return () => {
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onMove, true);
+      window.removeEventListener("resize", onMove);
     };
   }, [open]);
 
@@ -355,13 +373,13 @@ export function RowMenu({ label, items }: { label: string; items: MenuItem[] }) 
         aria-label={label}
         aria-haspopup="menu"
         aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggle}
         className="rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 hover:text-apptext-primary"
       >
         <MoreHorizontal className="size-4" />
       </button>
       {open && (
-        <div role="menu" className="absolute right-0 z-30 mt-1 w-60 rounded-xl border border-slate-200 bg-white p-1 shadow-lg">
+        <div role="menu" style={pos} className="fixed z-50 w-60 rounded-xl border border-slate-200 bg-white p-1 shadow-lg">
           {items.map((item) => {
             const Icon = item.icon;
             return (

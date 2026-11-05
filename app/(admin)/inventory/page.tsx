@@ -397,7 +397,7 @@ export default function InventoryOverviewPage() {
                         <tr className="bg-surface/60">
                           <td />
                           <td colSpan={7} className="pb-4 pr-4">
-                            <div className="grid gap-4 lg:grid-cols-[1fr_260px]">
+                            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_260px]">
                               <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
                                 <table className="w-full text-left text-sm">
                                   <thead className="border-b border-slate-100 text-xs text-apptext-secondary">

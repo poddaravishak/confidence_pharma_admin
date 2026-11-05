@@ -194,7 +194,7 @@ export default function UsersPage() {
         ) : (
           <>
             {/* Desktop table */}
-            <div className="hidden overflow-x-auto md:block">
+            <div className="relative hidden overflow-x-auto md:block">
               <table className="w-full text-left text-sm">
                 <thead className="border-b border-slate-200 bg-surface text-xs font-medium text-apptext-secondary">
                   <tr>

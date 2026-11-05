@@ -87,7 +87,7 @@ export default function ExpensesPage() {
       <Tabs value={tab} onChange={setTab} label="Expense views" tabs={[{ id: "expenses", label: "Expenses", count: items.length }, { id: "payroll", label: "Payroll" }]} />
 
       {tab === "expenses" && (
-        <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1fr_320px]">
+        <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_320px] xl:items-start">
           <Card>
             <div className="border-b border-slate-100 p-4">
               <FilterPills value={filter} onChange={setFilter} label="Category" options={[{ id: "ALL", label: "All" }, ...CATEGORIES.map((c) => ({ id: c, label: c }))]} />

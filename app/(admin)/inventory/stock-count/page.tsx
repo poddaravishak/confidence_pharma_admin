@@ -39,7 +39,7 @@ export default function StockCountPage() {
 
   return (
     <>
-      <div className="grid gap-5 xl:grid-cols-[320px_1fr]">
+      <div className="grid gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
         {/* Sessions list */}
         <Card className="h-fit overflow-hidden">
           <CardHeader

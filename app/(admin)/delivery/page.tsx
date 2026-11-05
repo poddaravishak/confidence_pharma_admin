@@ -145,7 +145,7 @@ function DispatchTab({ ready, preparing, canCreate }: { ready: Order[]; preparin
   };
 
   return (
-    <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1fr_340px]">
+    <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
       <Card>
         <CardHeader
           title="Packed and ready"

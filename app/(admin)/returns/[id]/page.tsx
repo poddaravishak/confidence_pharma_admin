@@ -131,7 +131,7 @@ export default function ReturnDetailPage({ params }: { params: Promise<{ id: str
         {ret.status === "REJECTED" && <p className="mt-3 rounded-lg bg-slate-100 p-3 text-sm text-slate-600">Rejected: {ret.rejectedReason}</p>}
       </Card>
 
-      <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1fr_340px]">
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
         <div className="space-y-5">
           {ret.status === "RECEIVED" ? (
             <Card>
